@@ -60,11 +60,13 @@ const Ollama = {
       'No inventes stats. No expliques. Solo las 3 líneas.'
     ].join(' ');
 
+    const poiHint = (ctx.pois || []).slice(0, 4).map(p => p.name).join(', ');
     const user = [
       `Era: ${ctx.era || '?'} | Año: ${ctx.year || 0} | Host: ${ctx.hostName || '?'}`,
       `Facción: ${ctx.faction || '—'} | Némesis: ${ctx.nemesis || '—'}`,
+      `Zona: ${ctx.zoneName || '—'} | Lugares: ${poiHint || '—'}`,
       `Contexto reciente:\n${(ctx.recentLogs || []).slice(-5).join('\n')}`,
-      'Tres acciones:'
+      'Tres acciones (puedes mencionar lugares reales de la lista):'
     ].join('\n\n');
 
     const raw = await this._chat(system, user, { temperature: 0.8, num_predict: 100 });
@@ -101,14 +103,18 @@ const Ollama = {
       'Reglas:',
       '- ok=false si: vacío de sentido, meta ("sube mi ATK"), rompe la era, teletransporta sin medio, mata al némesis al instante sin base, o pide stats/números al motor.',
       '- ok=true si es una acción de personaje plausible en este mundo; puedes reencuadrar levemente en "action".',
+      '- Si el jugador busca un lugar, SOLO nombra sitios de la lista de POIs reales. No inventes restaurantes/tiendas que no estén en la lista.',
       '- "narrative" solo si ok=true. No inventes números de stats.',
       '- Español.'
     ].join(' ');
 
+    const poiLines = (ctx.pois || []).map(p => `${p.name} (${p.type}, ${p.dir})`).join('; ') || 'ninguno listado';
     const user = [
       `Era: ${ctx.era || '?'} | Año: ${ctx.year || 0} | Host: ${ctx.hostName || '?'}`,
       `Facción: ${ctx.faction || '—'} | Némesis: ${ctx.nemesis || '—'}`,
       `HP: ${ctx.hp != null ? ctx.hp + '/' + ctx.maxHp : '—'}`,
+      `Zona: ${ctx.zoneName || '—'}`,
+      `Lugares reales de esta zona: ${poiLines}`,
       `Contexto:\n${(ctx.recentLogs || []).slice(-6).join('\n')}`,
       `Texto del jugador: "${ctx.playerText}"`,
       'JSON:'
@@ -132,7 +138,6 @@ const Ollama = {
         };
       }
     } catch (_) {}
-    // Fallback si el modelo no devolvió JSON: aceptar y usar el texto como narración mínima
     return {
       ok: true,
       action: original,
