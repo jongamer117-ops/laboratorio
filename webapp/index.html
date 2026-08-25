@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Laboratorio — Historias Interactivas</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #12181f;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+      --purple: #d2a8ff;
+      --border: #30363d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+    header .meta { color: var(--muted); font-size: 0.85rem; }
+    #feed {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .log {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--panel);
+      border-left: 3px solid var(--border);
+      font-size: 0.92rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .log.kind-intro { border-color: var(--accent); }
+    .log.kind-decision { border-color: var(--purple); }
+    .log.kind-death, .log.kind-calamity { border-color: var(--red); }
+    .log.kind-ascension, .log.kind-loot { border-color: var(--green); }
+    .log.kind-llm { border-color: #f0a500; background: #1a1608; }
+    #controls {
+      border-top: 1px solid var(--border);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: var(--panel);
+    }
+    #decision-box { display: none; }
+    #decision-box.visible { display: block; }
+    #decision-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    button, .opt {
+      background: #21262d;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    button:hover, .opt:hover { border-color: var(--accent); }
+    button.primary { background: #1f6feb; border-color: #1f6feb; }
+    #free-input-row {
+      display: flex;
+      gap: 8px;
+    }
+    #free-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 0.95rem;
+    }
+    #status {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    #status.ok { color: var(--green); }
+    #status.err { color: var(--red); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Laboratorio · Historias</h1>
+    <span class="meta" id="hud">—</span>
+    <span id="status">Ollama: …</span>
+  </header>
+
+  <div id="feed"></div>
+
+  <div id="controls">
+    <div id="decision-box">
+      <div id="decision-prompt" style="color:var(--purple);font-weight:600;"></div>
+      <div id="decision-options"></div>
+    </div>
+
+    <div id="free-input-row">
+      <input id="free-input" type="text" placeholder="Escribe algo distinto… (genera rama con LLM)" autocomplete="off" />
+      <button id="btn-free" class="primary">Enviar</button>
+    </div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="btn-boot">Nueva partida</button>
+      <button id="btn-step">Avanzar año</button>
+      <button id="btn-story">Ver relato</button>
+      <button id="btn-check-ollama">Probar Ollama</button>
+    </div>
+  </div>
+
+  <script src="tech_db.js"></script>
+  <script src="cards_db.js"></script>
+  <script src="engine.js"></script>
+  <script src="ollama.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
