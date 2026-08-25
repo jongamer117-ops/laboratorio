@@ -1,138 +1,154 @@
 /**
- * Laboratorio — capa 3 mínima.
- * Invariantes:
- *   D1  applyAction es la única puerta
- *   D2  misma semilla → mismo World
- *   D3  Mundo = f(semilla, choiceLog)
- * LLM propone (capa 2); motor aplica.
+ * Aventura interactiva — solo relato + input.
+ * D1/D2/D3 intactos: LLM propone, motor aplica vía choiceLog.
  */
 (function () {
-  const feed = document.getElementById('feed');
-  const hud = document.getElementById('hud');
-  const statusEl = document.getElementById('status');
-  const decisionBox = document.getElementById('decision-box');
-  const decisionPrompt = document.getElementById('decision-prompt');
-  const decisionOptions = document.getElementById('decision-options');
-  const freeInput = document.getElementById('free-input');
+  const storyEl = document.getElementById('story');
+  const choicesEl = document.getElementById('choices');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send');
 
   let world = null;
-  let recentLogs = [];
+  let recent = [];
+  let busy = false;
 
-  function appendLog(text, kind) {
-    const div = document.createElement('div');
-    div.className = 'log' + (kind ? ' kind-' + kind : '');
-    div.textContent = text;
-    feed.appendChild(div);
-    feed.scrollTop = feed.scrollHeight;
-    recentLogs.push(text);
-    if (recentLogs.length > 40) recentLogs.shift();
+  function write(text, cls) {
+    if (!text) return;
+    const p = document.createElement('p');
+    p.className = 'beat' + (cls ? ' ' + cls : '');
+    p.textContent = text;
+    storyEl.appendChild(p);
+    storyEl.scrollTop = storyEl.scrollHeight;
+    recent.push(text);
+    if (recent.length > 50) recent.shift();
   }
 
-  function refreshHud() {
-    if (!world) { hud.textContent = 'sin mundo'; return; }
-    const h = Engine.query(world, 'hud');
-    if (!h) { hud.textContent = '—'; return; }
-    hud.textContent = [
-      h.name || '?',
-      'año ' + h.year,
-      h.era || '',
-      h.rankLabel || h.rank || '',
-      h.hp != null ? ('HP ' + h.hp + '/' + h.maxHp) : ''
-    ].filter(Boolean).join(' · ');
+  function cleanLog(text) {
+    return String(text || '')
+      .replace(/^\[[^\]]+\]\s*/, '')
+      .trim();
   }
 
-  function showDecision() {
-    if (!world || !world.waitingForDecision || !world.pendingDecision) {
-      decisionBox.classList.remove('visible');
-      return;
-    }
+  function pushLogs(logs) {
+    (logs || []).forEach(l => {
+      const t = cleanLog(l.text);
+      if (!t) return;
+      let cls = '';
+      if (l.kind === 'death' || l.kind === 'calamity' || l.kind === 'ambush') cls = 'danger';
+      else if (l.kind === 'decision') cls = 'choice-title';
+      else if (l.kind === 'downtime' || l.kind === 'exploration') cls = 'muted';
+      write(t, cls);
+    });
+  }
+
+  function showChoices() {
+    choicesEl.innerHTML = '';
+    choicesEl.classList.remove('visible');
+    if (!world || !world.waitingForDecision || !world.pendingDecision) return;
+
     const pd = world.pendingDecision;
-    decisionBox.classList.add('visible');
-    decisionPrompt.textContent = pd.type === 'duel'
-      ? 'Juicio del Administrador'
-      : (pd.type === 'inflexion' ? 'Punto de Inflexión' : 'Bifurcación');
-    decisionOptions.innerHTML = '';
+    const title = pd.type === 'duel'
+      ? 'El vencido está a tu merced'
+      : (pd.type === 'inflexion' ? 'El destino exige un juicio' : 'El camino se bifurca');
+    write(title, 'choice-title');
+
+    choicesEl.classList.add('visible');
     (pd.options || []).forEach(opt => {
       const b = document.createElement('button');
-      b.className = 'opt';
+      b.className = 'choice-btn';
       b.textContent = opt.label || opt.id;
-      if (opt.desc) b.title = opt.desc;
-      b.onclick = () => {
-        const res = Engine.act(world, { type: 'decision', optionId: opt.id });
-        (res.logs || []).forEach(l => appendLog(l.text, l.kind));
-        decisionBox.classList.remove('visible');
-        refreshHud();
-      };
-      decisionOptions.appendChild(b);
+      b.onclick = () => pickChoice(opt.id);
+      choicesEl.appendChild(b);
     });
+  }
+
+  function pickChoice(optionId) {
+    if (busy || !world) return;
+    choicesEl.classList.remove('visible');
+    choicesEl.innerHTML = '';
+    const res = Engine.act(world, { type: 'decision', optionId: optionId });
+    pushLogs(res.logs);
+    if (!world.waitingForDecision && !world.waitingForChoice) {
+      advance(2);
+    } else {
+      showChoices();
+    }
+  }
+
+  function advance(years) {
+    if (!world || world.waitingForDecision || world.waitingForChoice) return;
+    const ticks = Math.max(1, (years || 1) * 12);
+    for (let i = 0; i < ticks; i++) {
+      const res = Engine.step(world);
+      pushLogs(res.logs);
+      if (res.stopped) break;
+    }
+    showChoices();
+    if (world.waitingForChoice) {
+      const story = Engine.query(world, 'story');
+      if (story && story.epitaph) write(story.epitaph, 'danger');
+      write('Fin de esta vida. Escribe «nueva» para volver a nacer.', 'muted');
+    }
   }
 
   function boot() {
-    feed.innerHTML = '';
-    recentLogs = [];
-    const seed = 'lab-' + Date.now().toString(36);
+    storyEl.innerHTML = '';
+    recent = [];
+    choicesEl.innerHTML = '';
+    choicesEl.classList.remove('visible');
+
+    const seed = 'adv-' + Date.now().toString(36);
     world = Engine.boot(seed);
-    // Host de génesis + mazo vacío (prueba mínima)
     const host = Engine.generateHost(seed, world.meta.era, world.universe);
-    const res = Engine.act(world, { type: 'start', baseAgent: host, cards: [] });
-    (res.logs || []).forEach(l => appendLog(l.text, l.kind));
-    appendLog('[LAB] Semilla: ' + seed, 'intro');
-    // Primer tick para afiliación / intro
-    const step = Engine.step(world);
-    (step.logs || []).forEach(l => appendLog(l.text, l.kind));
-    refreshHud();
-    showDecision();
+    Engine.act(world, { type: 'start', baseAgent: host, cards: [] });
+
+    // Intro + primeros años para entrar en la historia
+    const first = Engine.step(world);
+    pushLogs(first.logs);
+    advance(3);
   }
 
-  function stepYear() {
-    if (!world) return boot();
-    if (world.waitingForDecision) {
-      appendLog('[LAB] Hay una decisión pendiente. Elige o escribe texto libre.', 'decision');
-      showDecision();
+  async function onSend() {
+    const text = (input.value || '').trim();
+    if (!text || busy) return;
+
+    if (/^(nueva|reiniciar|reset)$/i.test(text)) {
+      input.value = '';
+      boot();
       return;
     }
+
+    if (!world) { boot(); return; }
     if (world.waitingForChoice) {
-      appendLog('[LAB] La corrida terminó. Nueva partida para reiniciar.', 'death');
+      write('Esta vida terminó. Escribe «nueva» para empezar otra.', 'muted');
+      input.value = '';
       return;
     }
-    // Avanzar ~1 año (12 ticks de 30)
-    for (let i = 0; i < 12; i++) {
-      const res = Engine.step(world);
-      (res.logs || []).forEach(l => appendLog(l.text, l.kind));
-      if (res.stopped) break;
+
+    input.value = '';
+    write(text, 'you');
+    busy = true;
+    sendBtn.disabled = true;
+
+    // Si hay decisión pendiente y el texto coincide con una opción, úsala
+    if (world.waitingForDecision && world.pendingDecision) {
+      const opts = world.pendingDecision.options || [];
+      const match = opts.find(o =>
+        (o.label && o.label.toLowerCase().includes(text.toLowerCase())) ||
+        (o.id && o.id.toLowerCase() === text.toLowerCase())
+      );
+      if (match) {
+        pickChoice(match.id);
+        busy = false;
+        sendBtn.disabled = false;
+        input.focus();
+        return;
+      }
     }
-    refreshHud();
-    showDecision();
-  }
 
-  function showStory() {
-    if (!world) return;
-    const story = Engine.query(world, 'story');
-    if (!story) {
-      appendLog('[LAB] Aún no hay relato (el Host debe morir o cerrar).', 'intro');
-      return;
-    }
-    appendLog('—— RELATO ——', 'intro');
-    appendLog(story.epitaph || '', 'intro');
-    (story.acts || []).forEach(a => {
-      appendLog('Acto: ' + a.title, 'ascension');
-      (a.beats || []).forEach(b => appendLog('  Año ' + b.year + ' — ' + b.text, b.kind));
-    });
-  }
-
-  async function freeBranch() {
-    const text = (freeInput.value || '').trim();
-    if (!text) return;
-    if (!world) boot();
-    freeInput.value = '';
-
-    appendLog('[JUGADOR] ' + text, 'decision');
-
-    // 1) Intentar LLM (capa 2 propone)
+    // LLM propone rama
     let proposal = null;
     try {
-      statusEl.textContent = 'Ollama: generando…';
-      statusEl.className = '';
       const h = Engine.query(world, 'hud') || {};
       const agent = world.agents && world.agents[0];
       proposal = await Ollama.proposeBranch({
@@ -141,25 +157,20 @@
         hostName: h.name,
         faction: agent && agent.faction,
         nemesis: agent && (agent.nemesisName || agent.nemesis),
-        recentLogs: recentLogs,
+        recentLogs: recent.slice(-8),
         playerText: text
       });
-      if (proposal) {
-        appendLog('[LLM] ' + proposal, 'llm');
-        statusEl.textContent = 'Ollama: ok';
-        statusEl.className = 'ok';
-      }
-    } catch (e) {
-      statusEl.textContent = 'Ollama: offline — rama local';
-      statusEl.className = 'err';
-      appendLog('[LAB] Ollama no disponible. Usando eco local.', 'intro');
-      proposal = 'El mundo registró la voluntad de ' + (hName()) + ': «' + text + '». Las consecuencias aún no se han materializado en el simulador.';
-      appendLog('[LOCAL] ' + proposal, 'llm');
+    } catch (_) {
+      proposal = null;
     }
 
-    // 2) Anotar en choiceLog como entrada de espectador (D3) — sin mutar stats a ciegas.
-    //    Por ahora es un marcador; cuando diseñemos el action type "free_text" formal,
-    //    el motor podrá usarlo para sesgar tables / abrir hilos.
+    if (proposal) {
+      write(proposal);
+    } else {
+      const name = (Engine.query(world, 'hud') || {}).name || 'El anfitrión';
+      write(name + ' actúa según su voluntad: «' + text + '». El mundo toma nota y sigue su curso.');
+    }
+
     world.choiceLog = world.choiceLog || [];
     world.choiceLog.push({
       tick: world.tick,
@@ -168,48 +179,19 @@
       llm: proposal || null
     });
 
-    // 3) Avanzar un poco el simulador para que el río siga corriendo
-    if (!world.waitingForDecision && !world.waitingForChoice) {
-      const res = Engine.step(world);
-      (res.logs || []).forEach(l => appendLog(l.text, l.kind));
-    }
-    refreshHud();
-    showDecision();
+    if (!world.waitingForDecision) advance(1);
+    else showChoices();
+
+    busy = false;
+    sendBtn.disabled = false;
+    input.focus();
   }
 
-  function hName() {
-    const h = Engine.query(world, 'hud');
-    return (h && h.name) || 'el Anfitrión';
-  }
+  sendBtn.onclick = onSend;
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') onSend();
+  });
 
-  async function checkOllama() {
-    statusEl.textContent = 'Ollama: comprobando…';
-    statusEl.className = '';
-    const ok = await Ollama.isAlive();
-    if (!ok) {
-      statusEl.textContent = 'Ollama: offline (¿ollama serve?)';
-      statusEl.className = 'err';
-      return;
-    }
-    try {
-      const models = await Ollama.listModels();
-      statusEl.textContent = 'Ollama: ok · ' + (models[0] || 'sin modelos');
-      statusEl.className = 'ok';
-      if (models.length) Ollama.model = models[0];
-    } catch (e) {
-      statusEl.textContent = 'Ollama: error';
-      statusEl.className = 'err';
-    }
-  }
-
-  document.getElementById('btn-boot').onclick = boot;
-  document.getElementById('btn-step').onclick = stepYear;
-  document.getElementById('btn-story').onclick = showStory;
-  document.getElementById('btn-free').onclick = freeBranch;
-  document.getElementById('btn-check-ollama').onclick = checkOllama;
-  freeInput.addEventListener('keydown', e => { if (e.key === 'Enter') freeBranch(); });
-
-  // Arranque
-  checkOllama();
   boot();
+  input.focus();
 })();
