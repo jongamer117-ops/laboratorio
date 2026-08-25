@@ -1,6 +1,7 @@
 /**
  * Aventura: 3 elecciones + texto libre validado.
  * D1/D2/D3: LLM propone/valida; motor aplica vía choiceLog.
+ * Spatial: resolveSpatialIntent consulta POIs reales de la zona (spatial.js).
  */
 (function () {
   const storyEl = document.getElementById('story');
@@ -47,6 +48,7 @@
   function ctxSnapshot() {
     const h = Engine.query(world, 'hud') || {};
     const agent = world && world.agents && world.agents[0];
+    const spatial = Engine.query(world, 'spatial') || {};
     return {
       era: h.era,
       year: h.year,
@@ -55,32 +57,128 @@
       nemesis: agent && (agent.nemesisName || agent.nemesis),
       hp: h.hp,
       maxHp: h.maxHp,
-      recentLogs: recent.slice(-8)
+      recentLogs: recent.slice(-8),
+      zoneName: spatial.zoneName || null,
+      pois: spatial.pois || [],
+      neighbors: spatial.neighbors || null
     };
   }
 
-  // ── Validación local (sin LLM) ──────────────────────────────────────────
+  const TYPE_RE = {
+    food: /restaurante|taberna|comedor|posada|inn|cafeter[ií]a|bar\b|cantina|fideos|noodles|comer|comida|cocina|olla|raciones/i,
+    shop: /tienda|bazar|armer[ií]a|comprar|vender|chips?|implantes?|m[oó]dulos?/i,
+    forge: /forja|taller|herrer[ií]a|reparaci[oó]n/i,
+    temple: /templo|santuario|iglesia|capilla|pabell[oó]n de meditaci[oó]n|meditar/i,
+    market: /mercado|plaza|trueque/i,
+    gate: /puerta|muralla|salida|acceso|checkpoint|esclusa|barricada|paso\b/i,
+    barracks: /cuartel|comisaría|comisaria|guardia|entrenamiento|vigilancia|campamento armado/i
+  };
+
+  const DIR_RE = {
+    norte: /\b(norte|adelante|arriba)\b/i,
+    sur: /\b(sur|atr[aá]s|abajo)\b/i,
+    este: /\b(este|derecha|right)\b/i,
+    oeste: /\b(oeste|izquierda|left)\b/i
+  };
+
+  function resolveSpatialIntent(text) {
+    const t = String(text || '').trim();
+    if (!t || !world) return null;
+
+    const spatial = Engine.query(world, 'spatial') || {};
+    const pois = spatial.pois || [];
+    const neighbors = spatial.neighbors || {};
+    const looking = /buscar|encontrar|localizar|ir\s+a|entrar|voy\s+a|vamos\s+a|dir[ií]gete|camina\s+hacia|hacia/i.test(t);
+
+    const low = t.toLowerCase();
+    for (const p of pois) {
+      const pn = (p.name || '').toLowerCase();
+      const short = pn.replace(/^el |la |los |las /i, '');
+      if (pn && (low.includes(pn) || low.includes(short))) {
+        return {
+          ok: true,
+          kind: 'poi',
+          poi: p,
+          action: 'entrar en ' + p.name,
+          narrative: 'Encuentras ' + p.name + ' hacia el ' + p.dir + ' de esta zona. El lugar es real en este mundo.'
+        };
+      }
+    }
+
+    if (looking || Object.keys(TYPE_RE).some(k => TYPE_RE[k].test(t))) {
+      for (const type of Object.keys(TYPE_RE)) {
+        if (!TYPE_RE[type].test(t)) continue;
+        const found = pois.filter(p => p.type === type);
+        if (found.length) {
+          const p = found[0];
+          return {
+            ok: true,
+            kind: 'poi',
+            poi: p,
+            action: 'buscar y entrar en ' + p.name,
+            narrative: 'Tras recorrer la zona, das con ' + p.name + ' (al ' + p.dir + '). No es invento: está anclado a este territorio.'
+          };
+        }
+        const lista = pois.length
+          ? pois.map(p => p.name).join(', ')
+          : 'ningún lugar destacado';
+        return {
+          ok: false,
+          kind: 'poi',
+          reason: 'En esta zona no hay ningún lugar de ese tipo. Aquí solo hay: ' + lista + '.'
+        };
+      }
+    }
+
+    for (const dir of Object.keys(DIR_RE)) {
+      if (!DIR_RE[dir].test(t)) continue;
+      const inDir = pois.filter(p => p.dir === dir);
+      if (inDir.length) {
+        const p = inDir[0];
+        return {
+          ok: true,
+          kind: 'poi',
+          poi: p,
+          action: 'ir hacia el ' + dir + ' hasta ' + p.name,
+          narrative: 'Tomas el camino al ' + dir + ' y llegas a ' + p.name + '.'
+        };
+      }
+      const neigh = neighbors[dir];
+      if (neigh) {
+        return {
+          ok: true,
+          kind: 'travel',
+          zone: neigh,
+          dir: dir,
+          action: 'viajar al ' + dir + ' hacia ' + neigh.name,
+          narrative: 'Dejas esta zona y tomas el camino al ' + dir + '. A lo lejos se alza ' + neigh.name + '.'
+        };
+      }
+      return {
+        ok: false,
+        kind: 'dir',
+        reason: 'Hacia el ' + dir + ' no hay un camino claro ni un lugar conocido desde aquí.'
+      };
+    }
+
+    return null;
+  }
+
   function validateBasic(text) {
     const t = String(text || '').trim().replace(/\s+/g, ' ');
     if (!t) return { ok: false, reason: 'Escribe algo.' };
     if (t.length < FREE_MIN) return { ok: false, reason: 'Demasiado corto.' };
     if (t.length > FREE_MAX) return { ok: false, reason: 'Máximo ' + FREE_MAX + ' caracteres.' };
-
-    // Meta / comandos al motor (no son acciones de personaje)
     const meta = /\b(atk|def|hp|stat|seed|debug|console|json|choiceLog|applyAction)\b/i;
     if (meta.test(t)) {
       return { ok: false, reason: 'Eso no es una acción del personaje en este mundo.' };
     }
-
-    // Solo símbolos / spam
     if (!/[a-záéíóúñü]/i.test(t)) {
       return { ok: false, reason: 'Necesito una acción en palabras.' };
     }
-
     return { ok: true, text: t };
   }
 
-  /** Si el texto libre coincide con una de las 3 opciones, devolver su id */
   function matchChoice(text) {
     const low = text.toLowerCase();
     return currentChoices.find(c => {
@@ -89,7 +187,6 @@
     }) || null;
   }
 
-  // ── Menú de 3 opciones ──────────────────────────────────────────────────
   function renderChoices(list) {
     currentChoices = list || [];
     choicesEl.innerHTML = '';
@@ -113,7 +210,6 @@
       return;
     }
 
-    // 1) Decisión autoritativa del motor (bifurcación / duelo / inflexión)
     if (world.waitingForDecision && world.pendingDecision) {
       const pd = world.pendingDecision;
       const title = pd.type === 'duel'
@@ -125,12 +221,10 @@
         label: o.label || o.id,
         source: 'motor'
       }));
-      // Si el motor trae menos de 3, rellenar no aplica: son decisiones cerradas
       renderChoices(list);
       return;
     }
 
-    // 2) LLM propone 3 acciones de escena
     write('¿Qué haces?', 'choice-title');
     let labels = null;
     try {
@@ -157,7 +251,6 @@
   function onPickChoice(c) {
     if (busy || !world) return;
 
-    // Opción del motor → applyAction formal
     if (c.source === 'motor') {
       choicesEl.classList.remove('visible');
       choicesEl.innerHTML = '';
@@ -173,11 +266,9 @@
       return;
     }
 
-    // Opción de escena (LLM/local) → tratar como texto libre ya “pre-validado”
     applyFreeAction(c.label, { preValidated: true });
   }
 
-  // ── Avance del motor ────────────────────────────────────────────────────
   async function advance(years) {
     if (!world || world.waitingForDecision || world.waitingForChoice) return;
     const ticks = Math.max(1, (years || 1) * 12);
@@ -218,12 +309,10 @@
     });
   }
 
-  // ── Texto libre con validación ──────────────────────────────────────────
   async function applyFreeAction(rawText, opts) {
     opts = opts || {};
     if (busy || !world) return;
 
-    // 1) Validación básica local
     const basic = validateBasic(rawText);
     if (!basic.ok) {
       write(basic.reason, 'muted');
@@ -231,7 +320,6 @@
     }
     const text = basic.text;
 
-    // 2) ¿Coincide con una opción visible?
     const matched = matchChoice(text);
     if (matched && matched.source === 'motor') {
       onPickChoice(matched);
@@ -248,22 +336,46 @@
     let action = text;
     let narrative = '';
     let validation = { ok: true, action: text, reason: '', narrative: '' };
+    let spatialHit = null;
 
-    // 3) Validación contextual (LLM), salvo si ya viene de un botón de escena
     if (!opts.preValidated) {
+      spatialHit = resolveSpatialIntent(text);
+      if (spatialHit) {
+        if (!spatialHit.ok) {
+          write(spatialHit.reason || 'No encuentras eso aquí.', 'muted');
+          await offerChoices();
+          busy = false;
+          sendBtn.disabled = false;
+          input.focus();
+          return;
+        }
+        action = spatialHit.action || text;
+        narrative = spatialHit.narrative || '';
+
+        if (spatialHit.kind === 'travel' && spatialHit.zone) {
+          const res = Engine.act(world, {
+            type: 'travel',
+            zoneId: spatialHit.zone.id,
+            dir: spatialHit.dir,
+            text: text
+          });
+          pushLogs(res.logs);
+        }
+      }
+    }
+
+    if (!opts.preValidated && !spatialHit) {
       try {
         validation = await Ollama.validateFreeText({
           ...ctxSnapshot(),
           playerText: text
         });
       } catch (_) {
-        // Sin Ollama: aceptar con narración local
         validation = { ok: true, action: text, reason: '', narrative: '' };
       }
 
       if (!validation.ok) {
         write(validation.reason || 'Esa acción no encaja en este momento.', 'muted');
-        // Re-ofrecer las mismas (o nuevas) opciones
         await offerChoices();
         busy = false;
         sendBtn.disabled = false;
@@ -275,7 +387,6 @@
       narrative = validation.narrative || '';
     }
 
-    // 4) Narración si el validador no la trajo
     if (!narrative) {
       try {
         narrative = await Ollama.proposeBranch({
@@ -290,19 +401,23 @@
 
     if (narrative) write(narrative);
 
-    // 5) Anotar en choiceLog (D3) — solo acciones validadas
-    world.choiceLog = world.choiceLog || [];
-    world.choiceLog.push({
-      tick: world.tick,
-      choice: 'free_text',
-      text: text,
-      action: action,
-      validated: true,
-      llm: narrative || null
-    });
+    if (!(spatialHit && spatialHit.kind === 'travel')) {
+      world.choiceLog = world.choiceLog || [];
+      const entry = {
+        tick: world.tick,
+        choice: spatialHit && spatialHit.kind === 'poi' ? 'enter_poi' : 'free_text',
+        text: text,
+        action: action,
+        validated: true,
+        llm: narrative || null
+      };
+      if (spatialHit && spatialHit.poi) {
+        entry.poiId = spatialHit.poi.id;
+        entry.poiType = spatialHit.poi.type;
+      }
+      world.choiceLog.push(entry);
+    }
 
-    // 6) Si había decisión de motor pendiente y el jugador se salió por texto libre,
-    //    no la resolvemos por id (el motor sigue esperando). Solo avanzamos si no hay pausa.
     if (!world.waitingForDecision && !world.waitingForChoice) {
       await advance(1);
     }
@@ -331,7 +446,6 @@
       return;
     }
 
-    // Atajo numérico: 1 / 2 / 3 elige la opción del menú
     if (/^[123]$/.test(text) && currentChoices.length) {
       const idx = parseInt(text, 10) - 1;
       if (currentChoices[idx]) {
