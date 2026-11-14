@@ -7,11 +7,14 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 const val PRESET_AIGIS =
-    "masterpiece, best quality, full art, medieval fantasy, anime, standing character, ornate armor, detailed face, full body, black background, simple background"
+    "full art, medieval fantasy, anime, standing character, ornate armor, detailed face, full body, black background, simple background"
 
 const val NEGATIVO_BASE = "lowres, bad anatomy, bad hands, extra digits, blurry, watermark, text, signature"
 
-const val NEGATIVO_FORZADO = "child, loli, shota, young, underage"
+const val NEGATIVO_FORZADO = "child, loli, shota, young, underage, nude"
+
+fun perfilImagen(modelo: String): Pair<Float, Float> =
+    if (modelo == "flux") 4f to 0f else 28f to 4.5f
 
 fun nombreSeguro(nombre: String): String {
     val plano = java.text.Normalizer.normalize(nombre, java.text.Normalizer.Form.NFD)

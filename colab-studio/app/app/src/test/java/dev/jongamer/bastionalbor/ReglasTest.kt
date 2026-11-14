@@ -4,6 +4,7 @@ import dev.jongamer.bastionalbor.logica.NEGATIVO_FORZADO
 import dev.jongamer.bastionalbor.logica.esMasNueva
 import dev.jongamer.bastionalbor.logica.extraerPedido
 import dev.jongamer.bastionalbor.logica.nombreSeguro
+import dev.jongamer.bastionalbor.logica.perfilImagen
 import dev.jongamer.bastionalbor.logica.negativoForzado
 import dev.jongamer.bastionalbor.logica.parsearQr
 import dev.jongamer.bastionalbor.logica.quitarForzado
@@ -49,6 +50,14 @@ class ReglasTest {
         assertTrue(esMasNueva("v0.2.0", "0.1.0"))
         assertFalse(esMasNueva("v0.1.0", "0.1.0"))
         assertFalse(esMasNueva("0.1.0", "0.2.0"))
+    }
+
+    @Test
+    fun elPerfilDeImagenCambiaPasosYGuia() {
+        assertEquals(28f, perfilImagen("ilustrious").first)
+        assertEquals(4.5f, perfilImagen("ilustrious").second)
+        assertEquals(4f, perfilImagen("flux").first)
+        assertEquals(0f, perfilImagen("flux").second)
     }
 
     @Test

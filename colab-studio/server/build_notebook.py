@@ -45,7 +45,7 @@ App personal de Jonathan. Este notebook enciende un API en la GPU **T4 gratuita*
 
 ## Qué hace
 
-- **Imagen:** Illustrious (anime, por defecto) o Flux Schnell (realista, 4 pasos, guía 0). Illustrious admite prompts largos troceados de 75 tokens, sin compel.
+- **Imagen:** Illustrious XL v2.0 (anime, Euler a sin Karras, 28 pasos, guía 4.5) o Flux Schnell (realista, 4 pasos, guía 0, respaldo unsloth). Illustrious admite prompts largos troceados de 75 tokens, sin compel.
 - **Texto, solo sin censura:** por defecto el 7B abliterado. También cabe el 14B. El 32B no entra en una sola T4.
 - Solo un modelo en la GPU. Al cambiar, el otro se descarga de la memoria.
 - Trabajos: `POST /api/trabajos` → `GET /api/trabajos/{id}` → `GET /api/trabajos/{id}/resultado`.
@@ -90,7 +90,7 @@ Mismo API que Colab, pensado para **dos T4**. No monta Drive ni usa la librería
 
 ## Modelos
 
-- **Imagen:** Illustrious (anime) o Flux Schnell (realista, NF4; si no entra, fp16 con descarga a CPU). 4 pasos, guía 0, `max_sequence_length` 256.
+- **Imagen:** Illustrious XL v2.0 (anime, Euler a sin Karras, 28 pasos, guía 4.5) o Flux Schnell (realista, NF4 y offload; si el oficial no entra, `unsloth/FLUX.1-schnell`). 4 pasos, guía 0, `max_sequence_length` 256.
 - **Texto, solo sin censura:** por defecto `huihui-ai/Qwen2.5-32B-Instruct-abliterated` en 4-bit, repartido en las dos T4 (`14GiB` + `14GiB` + `20GiB` de CPU). Si no cabe en disco (pesa unos **65 GB**), en la app elige el **14B**.
 - El 14B público es `sci4ai/Qwen2.5-14B-Instruct-Abliterated`. El repo 14B de huihui responde 401 sin token.
 - Bloqueo de menores fijo, igual que en Colab.

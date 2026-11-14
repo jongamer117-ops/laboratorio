@@ -57,6 +57,7 @@ fun PantallaImagen(
     snack: SnackbarHostState,
     modelo: String,
 ) {
+    LaunchedEffect(modelo) { vm.sincronizarModelo(modelo) }
     val contexto = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val scroll = rememberScrollState()
@@ -86,9 +87,9 @@ fun PantallaImagen(
         }
         Campo(vm.prompt, { vm.prompt = it }, "Prompt", minLineas = 4)
         Text("Pasos ${vm.pasos.toInt()}", style = MaterialTheme.typography.titleSmall)
-        Slider(value = vm.pasos, onValueChange = { vm.pasos = it }, valueRange = 10f..40f, steps = 29, colors = coloresSlider())
+        Slider(value = vm.pasos, onValueChange = { vm.pasos = it }, valueRange = 1f..40f, steps = 38, colors = coloresSlider())
         Text("Guía ${"%.1f".format(vm.guia)}", style = MaterialTheme.typography.titleSmall)
-        Slider(value = vm.guia, onValueChange = { vm.guia = it }, valueRange = 1f..12f, colors = coloresSlider())
+        Slider(value = vm.guia, onValueChange = { vm.guia = it }, valueRange = 0f..12f, colors = coloresSlider())
         Text("Cantidad", style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             (1..4).forEach { n ->

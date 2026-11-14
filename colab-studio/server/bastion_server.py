@@ -26,9 +26,10 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-REPO_IMAGEN = "OnomaAIResearch/Illustrious-xl-early-release-v0"
-ARCHIVO_IMAGEN = "Illustrious-XL-v0.1.safetensors"
+REPO_IMAGEN = "OnomaAIResearch/Illustrious-XL-v2.0"
+ARCHIVO_IMAGEN = "Illustrious-XL-v2.0.safetensors"
 REPO_FLUX = "black-forest-labs/FLUX.1-schnell"
+REPO_FLUX_RESPALDO = "unsloth/FLUX.1-schnell"
 # 7B y 32B de huihui se bajan sin token. El 14B de huihui responde 401
 # anónimo, así que el 14B es el safetensors público más cercano.
 REPO_TEXTO_7B = "huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2"
@@ -41,11 +42,12 @@ LARGO_TROZO = 75
 DISCOVERY_TOPIC = "bastion-albor-c7e1a94f6b2d4803e5a8c1f07d3b69e24a51f0c8"
 DISCOVERY_KEY_B64 = "RTMuKJDbQrFucahtdaTVNo+7w+kS6UrYahOb6tzIs78="
 DISCOVERY_AAD = b"bastion-albor"
-PREFIJO_ANIME = "masterpiece, best quality, "
-PREFIJO_REALISTA = "highly detailed, sharp focus, "
+PREFIJO_ANIME = "masterpiece, best quality, amazing quality, newest, "
+SUFIJO_ANIME = "highres, absurdres"
+NEGATIVO_ESTILO = "shiny, glossy, latex, plastic, specular highlight, oversaturated, high contrast"
 
 # Términos que siempre se añaden al negativo de imagen. No se pueden quitar.
-NEGATIVO_FORZADO = "child, loli, shota, young, underage"
+NEGATIVO_FORZADO = "child, loli, shota, young, underage, nude"
 
 # Se buscan en el prompt positivo (palabra o forma compacta, sin acentos).
 TERMINOS_IMAGEN = (
@@ -243,6 +245,7 @@ def _pasar_encoder(encoder, trozos: list[list[int]], querer_pooled: bool = False
         salida = encoder(ids, output_hidden_states=True)
         # Penúltimo estado oculto: el último es el de la capa final ya normalizado
         # de otra forma y diffusers usa el -2 en SDXL.
+        # Clip skip de Illustrious: penúltimo estado. No se pasa clip_skip=2.
         ocultos.append(salida.hidden_states[-2])
         if querer_pooled and indice == 0:
             pooled = getattr(salida, "text_embeds", None)
@@ -270,12 +273,16 @@ def codificar_prompt_sdxl(pipe, positivo: str, negativo: str):
     return torch.cat([h1, h2], dim=-1), torch.cat([nh1, nh2], dim=-1), pooled, npooled
 
 
-def negativo_forzado(negativo: Optional[str]) -> str:
-    """El negativo del usuario se conserva y el bloqueo se concatena al final."""
+def negativo_forzado(negativo: Optional[str], modelo: str = "ilustrious") -> str:
+    """El negativo del usuario se conserva. El bloqueo de menores no se puede quitar."""
+    partes = []
     base = (negativo or "").strip().strip(",")
     if base:
-        return f"{base}, {NEGATIVO_FORZADO}"
-    return NEGATIVO_FORZADO
+        partes.append(base)
+    if modelo != "flux":
+        partes.append(NEGATIVO_ESTILO)
+    partes.append(NEGATIVO_FORZADO)
+    return ", ".join(partes)
 
 
 def relato_bloqueado(sistema: str, pedido: str) -> Optional[str]:
@@ -488,73 +495,91 @@ def _cargar_ilustrious(cache: str, reportar: Callable[[float, str], None]):
     pipe = pipe.to("cuda")
     from diffusers import EulerAncestralDiscreteScheduler
 
-    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+    # Euler ancestral lineal. use_karras_sigmas queda apagado a propósito.
+    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
+        pipe.scheduler.config,
+        use_karras_sigmas=False,
+    )
     _activar_tiling(pipe)
     if hasattr(pipe, "enable_attention_slicing"):
         pipe.enable_attention_slicing()
     return pipe
 
 
-def _cargar_flux(cache: str, reportar: Callable[[float, str], None]):
+def _flux_nf4(repo: str, cache: str, token: Optional[str]):
     import torch
+    from diffusers import FluxPipeline, FluxTransformer2DModel
+    from transformers import BitsAndBytesConfig, T5EncoderModel
 
-    token = _token_hf()
-    # La T4 no tiene bf16 nativo. NF4 con cálculo fp16, y si falla, fp16 con offload a CPU.
-    reportar(0.05, "Cargando Flux Schnell en NF4…")
-    try:
-        from diffusers import FluxPipeline, FluxTransformer2DModel
-        from transformers import BitsAndBytesConfig, T5EncoderModel
-
-        nf4 = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-        transformer = FluxTransformer2DModel.from_pretrained(
-            REPO_FLUX,
-            subfolder="transformer",
-            quantization_config=nf4,
-            torch_dtype=torch.float16,
-            cache_dir=cache,
-            token=token,
-        )
-        text_encoder_2 = T5EncoderModel.from_pretrained(
-            REPO_FLUX,
-            subfolder="text_encoder_2",
-            quantization_config=nf4,
-            torch_dtype=torch.float16,
-            cache_dir=cache,
-            token=token,
-        )
-        pipe = FluxPipeline.from_pretrained(
-            REPO_FLUX,
-            transformer=transformer,
-            text_encoder_2=text_encoder_2,
-            torch_dtype=torch.float16,
-            cache_dir=cache,
-            token=token,
-        )
-        pipe.enable_model_cpu_offload()
-    except Exception as exc:
-        envuelto = _error_flux(exc)
-        if envuelto is not exc:
-            raise envuelto from exc
-        reportar(0.07, "NF4 no entró. Flux en fp16 con descarga a CPU…")
-        try:
-            from diffusers import FluxPipeline
-
-            pipe = FluxPipeline.from_pretrained(
-                REPO_FLUX,
-                torch_dtype=torch.float16,
-                cache_dir=cache,
-                token=token,
-            )
-            pipe.enable_model_cpu_offload()
-        except Exception as segundo:
-            raise _error_flux(segundo) from segundo
-    if hasattr(pipe, "vae"):
-        _activar_tiling(pipe)
+    nf4 = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+    )
+    transformer = FluxTransformer2DModel.from_pretrained(
+        repo,
+        subfolder="transformer",
+        quantization_config=nf4,
+        torch_dtype=torch.float16,
+        cache_dir=cache,
+        token=token,
+    )
+    text_encoder_2 = T5EncoderModel.from_pretrained(
+        repo,
+        subfolder="text_encoder_2",
+        quantization_config=nf4,
+        torch_dtype=torch.float16,
+        cache_dir=cache,
+        token=token,
+    )
+    pipe = FluxPipeline.from_pretrained(
+        repo,
+        transformer=transformer,
+        text_encoder_2=text_encoder_2,
+        torch_dtype=torch.float16,
+        cache_dir=cache,
+        token=token,
+    )
+    pipe.enable_model_cpu_offload()
     return pipe
+
+
+def _flux_fp16(repo: str, cache: str, token: Optional[str]):
+    import torch
+    from diffusers import FluxPipeline
+
+    pipe = FluxPipeline.from_pretrained(
+        repo,
+        torch_dtype=torch.float16,
+        cache_dir=cache,
+        token=token,
+    )
+    pipe.enable_model_cpu_offload()
+    return pipe
+
+
+def _cargar_flux(cache: str, reportar: Callable[[float, str], None]):
+    token = _token_hf()
+    # La T4 no tiene bf16 nativo. NF4 con cálculo fp16, offload a CPU y tiling del VAE.
+    # Si el repo oficial no entra, se usa unsloth/FLUX.1-schnell.
+    ultimo: Optional[Exception] = None
+    for repo in (REPO_FLUX, REPO_FLUX_RESPALDO):
+        for modo in ("nf4", "fp16"):
+            try:
+                if modo == "nf4":
+                    reportar(0.05, f"Cargando Flux Schnell en NF4 ({repo})…")
+                    pipe = _flux_nf4(repo, cache, token)
+                else:
+                    reportar(0.07, "NF4 no entró. Flux en fp16 con descarga a CPU…")
+                    pipe = _flux_fp16(repo, cache, token)
+                if hasattr(pipe, "vae"):
+                    _activar_tiling(pipe)
+                return pipe
+            except Exception as exc:
+                ultimo = exc
+        if repo != REPO_FLUX_RESPALDO:
+            reportar(0.08, "El Flux oficial no entró. Probando unsloth/FLUX.1-schnell…")
+    raise _error_flux(ultimo or RuntimeError("No se pudo cargar Flux."))
 
 
 def _semilla_de(payload: dict, indice: int) -> int:
@@ -565,10 +590,20 @@ def _semilla_de(payload: dict, indice: int) -> int:
 
 
 def prompt_con_calidad(prompt: str, modelo: str) -> str:
-    prefijo = PREFIJO_REALISTA if modelo == "flux" else PREFIJO_ANIME
-    if prompt.lower().startswith(prefijo.strip().lower()):
-        return prompt
-    return prefijo + prompt
+    texto = (prompt or "").strip().strip(",")
+    if modelo == "flux":
+        # Schnell va en lenguaje natural. No se anteponen etiquetas de anime.
+        return texto
+    bajo = texto.lower()
+    prefijo = PREFIJO_ANIME.strip()
+    if bajo.startswith("masterpiece, best quality,") and not bajo.startswith(prefijo.lower()):
+        resto = re.sub(r"(?i)^masterpiece\s*,\s*best quality\s*,?\s*", "", texto).strip()
+        texto = f"{PREFIJO_ANIME}{resto}"
+    elif not bajo.startswith(prefijo.lower()):
+        texto = f"{PREFIJO_ANIME}{texto}"
+    if "absurdres" not in texto.lower():
+        texto = texto.rstrip(", ") + ", " + SUFIJO_ANIME
+    return texto
 
 
 def separar_fondo(imagen):
@@ -598,8 +633,8 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
     pipe = gestor.pipe
     cantidad = payload["cantidad"]
     es_flux = cual == "flux"
-    pasos = 4 if es_flux else payload["pasos"]
-    guia = 0.0 if es_flux else payload["guia"]
+    pasos = payload["pasos"]
+    guia = payload["guia"]
     imagenes = []
     for indice in range(cantidad):
         semilla_i = _semilla_de(payload, indice)
@@ -695,7 +730,25 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
     }
 
 
-def _completar(gestor: GestorModelos, sistema: str, pedido: str, max_new: int, temperatura: float) -> str:
+TOKENS_CAPITULO = 3200
+MUESTREO_CAPITULO = {"top_p": 0.8, "top_k": 20, "min_p": 0.05, "repetition_penalty": 1.05}
+
+
+def termina_frase(texto: str) -> bool:
+    limpio = (texto or "").rstrip()
+    if not limpio:
+        return False
+    return limpio[-1] in ".!?…\"»”’'"
+
+
+def _completar(
+    gestor: GestorModelos,
+    sistema: str,
+    pedido: str,
+    max_new: int,
+    temperatura: float,
+    muestreo: Optional[dict] = None,
+) -> str:
     tok = gestor.tokenizer
     model = gestor.modelo_texto
     mensajes = []
@@ -706,12 +759,17 @@ def _completar(gestor: GestorModelos, sistema: str, pedido: str, max_new: int, t
     texto = tok.apply_chat_template(mensajes, tokenize=False, add_generation_prompt=True)
     enc = tok(texto, return_tensors="pt")
     enc = {k: v.to(model.device) for k, v in enc.items()}
+    ajuste = muestreo or {}
     kwargs = dict(
         max_new_tokens=max_new,
         do_sample=temperatura > 0.05,
-        top_p=0.9,
-        repetition_penalty=1.05,
+        top_p=ajuste.get("top_p", 0.9),
+        repetition_penalty=ajuste.get("repetition_penalty", 1.05),
     )
+    if "top_k" in ajuste:
+        kwargs["top_k"] = ajuste["top_k"]
+    if "min_p" in ajuste:
+        kwargs["min_p"] = ajuste["min_p"]
     if temperatura > 0.05:
         kwargs["temperature"] = temperatura
     salida = model.generate(**enc, **kwargs)
@@ -819,7 +877,21 @@ def generar_novela_real(payload: dict, reportar: Callable[[float, str], None], g
             f"Final del capítulo anterior:\n{cola[-1800:] or '(es el primer capítulo)'}\n\n"
             f"Escribe el capítulo {numero}."
         )
-        texto = _completar(gestor, sistema_cap, pedido, 2400, 0.85)
+        creatividad = float(payload.get("creatividad") or 0.7)
+        texto = _completar(gestor, sistema_cap, pedido, TOKENS_CAPITULO, creatividad, MUESTREO_CAPITULO)
+        if not termina_frase(texto):
+            reportar(base + 0.4, f"Capítulo {numero} · cerrando la frase")
+            extra = _completar(
+                gestor,
+                sistema_cap,
+                "El capítulo se cortó. Continúa desde el final, sin repetir lo ya escrito, "
+                "y termina la frase:\n\n" + texto[-1200:],
+                800,
+                creatividad,
+                MUESTREO_CAPITULO,
+            )
+            if extra:
+                texto = texto.rstrip() + " " + extra.lstrip()
         reportar(base + 0.55, f"Capítulo {numero} · resumiendo")
         resumen = _completar(
             gestor,
@@ -985,13 +1057,13 @@ class Estado:
             semilla_val = _entero(semilla, 0, 0, 2**31 - 1, "Semilla")
         return {
             "prompt": prompt,
-            "negativo": negativo_forzado(data.get("negativo") or ""),
+            "negativo": negativo_forzado(data.get("negativo") or "", modelo),
             "ancho": ancho,
             "alto": alto,
             "cantidad": _entero(data.get("cantidad"), 1, 1, CANTIDAD_MAX, "Cantidad"),
             "semilla": semilla_val,
-            "pasos": _entero(data.get("pasos"), 28, 1, PASOS_MAX, "Pasos"),
-            "guia": _flotante(data.get("guia"), 5.5, 0.0, 12.0, "Guía"),
+            "pasos": _entero(data.get("pasos"), 4 if modelo == "flux" else 28, 1, PASOS_MAX, "Pasos"),
+            "guia": _flotante(data.get("guia"), 0.0 if modelo == "flux" else 4.5, 0.0, 12.0, "Guía"),
             "modelo": modelo,
             "quitar_fondo": _bandera(data.get("quitar_fondo"), True),
         }
@@ -1049,6 +1121,7 @@ class Estado:
             "cola": (data.get("cola") or "")[-2000:],
             "siguiente": _entero(data.get("siguiente"), 0, 0, 999, "Capítulo"),
             "cantidad": _entero(data.get("cantidad"), 1, 1, 10, "Capítulos"),
+            "creatividad": _flotante(data.get("creatividad"), 0.7, 0.05, 1.5, "Creatividad"),
             "modelo": modelo,
         }
 
@@ -1079,7 +1152,7 @@ class Estado:
         return {
             "ok": True,
             "nombre": "Bastión de Albor",
-            "version": "0.1.1",
+            "version": "0.1.2",
             "backend": backend_actual(),
             "gpu": gpu,
             "gpus": gpus,

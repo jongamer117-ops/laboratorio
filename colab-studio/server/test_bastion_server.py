@@ -7,6 +7,19 @@ import bastion_server as srv
 
 
 class NovelaTests(unittest.TestCase):
+    def test_perfiles_de_imagen_y_cierre_de_frase(self):
+        anime = srv.prompt_con_calidad("caballero de oro", "ilustrious")
+        self.assertTrue(anime.startswith("masterpiece, best quality, amazing quality, newest, "))
+        self.assertTrue(anime.endswith(", highres, absurdres"))
+        self.assertNotIn("very aesthetic", anime)
+        self.assertEqual(srv.prompt_con_calidad("a knight in the rain", "flux"), "a knight in the rain")
+        negativo = srv.negativo_forzado("lowres", "ilustrious")
+        self.assertIn("shiny, glossy, latex", negativo)
+        self.assertIn("nude", negativo)
+        self.assertNotIn("shiny", srv.negativo_forzado("lowres", "flux"))
+        self.assertFalse(srv.termina_frase("El bastión aguant"))
+        self.assertTrue(srv.termina_frase("El bastión aguantó."))
+
     def test_el_estado_se_reemplaza_sin_borrar_la_biblia(self):
         nuevo = srv.actualizar_seccion_estado("El reino.\n", "En el muro.")
         self.assertIn("El reino.", nuevo)
@@ -163,9 +176,13 @@ class ApiTests(unittest.TestCase):
         self.assertIn("underage", cuerpo["negativo_usado"])
         trabajo = self.estado.trabajos[id_trabajo].payload
         self.assertEqual(trabajo["modelo"], "ilustrious")
-        self.assertTrue(trabajo["prompt"].startswith("masterpiece, best quality, "))
+        self.assertTrue(trabajo["prompt"].startswith("masterpiece, best quality, amazing quality, newest, "))
+        self.assertTrue(trabajo["prompt"].endswith("highres, absurdres"))
+        self.assertIn("shiny, glossy", trabajo["negativo"])
+        self.assertIn("nude", trabajo["negativo"])
         self.assertTrue(trabajo["quitar_fondo"])
         self.assertEqual(trabajo["pasos"], 10)
+        self.assertEqual(trabajo["guia"], 5.5)
         self.assertEqual(trabajo["ancho"], 832)
 
     def test_trabajo_de_relato_abliterado_por_defecto(self):

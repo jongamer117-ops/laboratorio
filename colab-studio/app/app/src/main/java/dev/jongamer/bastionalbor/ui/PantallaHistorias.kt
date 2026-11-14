@@ -130,9 +130,9 @@ fun PantallaHistorias(
         if (!vm.larga) {
             Text(etiquetaLargo(vm.largo), style = MaterialTheme.typography.titleSmall)
             Slider(value = vm.largo, onValueChange = { vm.largo = it }, valueRange = 200f..1000f, colors = coloresSlider())
-            Text("Creatividad ${"%.1f".format(vm.creatividad)}", style = MaterialTheme.typography.titleSmall)
-            Slider(value = vm.creatividad, onValueChange = { vm.creatividad = it }, valueRange = 0.2f..1.2f, colors = coloresSlider())
         }
+        Text("Creatividad ${"%.1f".format(vm.creatividad)}", style = MaterialTheme.typography.titleSmall)
+        Slider(value = vm.creatividad, onValueChange = { vm.creatividad = it }, valueRange = 0.2f..1.2f, colors = coloresSlider())
         BotonOro(
             texto = when {
                 vm.generando -> "Escribiendo…"

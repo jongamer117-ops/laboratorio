@@ -256,7 +256,8 @@ class ImagenViewModel(private val repo: Repositorio) : ViewModel() {
     var cantidad by mutableStateOfSafe(1)
     var semillaTexto by mutableStateOfSafe("")
     var pasos by mutableStateOfSafe(28f)
-    var guia by mutableStateOfSafe(5.5f)
+    var guia by mutableStateOfSafe(4.5f)
+    private var perfilModelo by mutableStateOfSafe<String?>(null)
     var marco by mutableStateOfSafe("oro")
     var modeloImagen by mutableStateOfSafe("ilustrious")
     var generando by mutableStateOfSafe(false)
@@ -289,6 +290,15 @@ class ImagenViewModel(private val repo: Repositorio) : ViewModel() {
                 }
             }
         }
+    }
+
+    fun sincronizarModelo(modelo: String) {
+        if (perfilModelo == modelo) return
+        perfilModelo = modelo
+        modeloImagen = modelo
+        val (pasosPerfil, guiaPerfil) = dev.jongamer.bastionalbor.logica.perfilImagen(modelo)
+        pasos = pasosPerfil
+        guia = guiaPerfil
     }
 
     fun generar(modelo: String) {
@@ -362,7 +372,7 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
     var sistema by mutableStateOfSafe(SISTEMA_DEFAULT)
     var pedido by mutableStateOfSafe("")
     var largo by mutableStateOfSafe(700f)
-    var creatividad by mutableStateOfSafe(0.8f)
+    var creatividad by mutableStateOfSafe(0.7f)
     var modelo by mutableStateOfSafe("7b")
     var generando by mutableStateOfSafe(false)
     var avance by mutableStateOfSafe(0f)
@@ -468,6 +478,7 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
                     siguiente = siguiente,
                     cantidad = cantidadNovela,
                     modelo = modelo,
+                    creatividad = creatividad,
                 ) { valor, texto ->
                     withContext(Dispatchers.Main) {
                         avance = valor

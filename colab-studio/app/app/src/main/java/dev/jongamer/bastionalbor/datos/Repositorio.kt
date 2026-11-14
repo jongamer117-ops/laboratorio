@@ -213,6 +213,7 @@ class Repositorio(context: Context) {
         siguiente: Int,
         cantidad: Int,
         modelo: String,
+        creatividad: Float,
         onAvance: suspend (Float, String) -> Unit,
     ): NovelaHecha = withContext(Dispatchers.IO) {
         if (!conectarSiHaceFalta()) throw ErrorEstudio.SinConexion()
@@ -224,6 +225,7 @@ class Repositorio(context: Context) {
             .put("cola", cola)
             .put("siguiente", siguiente)
             .put("cantidad", cantidad)
+            .put("creatividad", creatividad.toDouble())
             .put("modelo", modelo)
         val lista = org.json.JSONArray()
         resumenes.takeLast(12).forEach { (n, texto) ->
