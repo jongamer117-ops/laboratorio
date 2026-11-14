@@ -29,12 +29,15 @@ class Archivos(private val resolver: android.content.ContentResolver) {
         return uri
     }
 
-    fun guardarTexto(texto: String, nombre: String): Uri {
+    fun guardarTexto(texto: String, nombre: String): Uri =
+        guardarTextoEn("Documents/BastionAlbor", nombre, texto, "text/markdown")
+
+    fun guardarTextoEn(carpeta: String, nombre: String, texto: String, mime: String = "text/plain"): Uri {
         val coleccion = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val valores = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, nombre)
-            put(MediaStore.MediaColumns.MIME_TYPE, "text/markdown")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "Documents/BastionAlbor")
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, carpeta)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         var uri = resolver.insert(coleccion, valores)

@@ -22,11 +22,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -77,10 +79,37 @@ fun PantallaHistorias(
                 onAccion = onAjustes,
             )
         }
-        MarcoOrnado(color = MaterialTheme.colorScheme.primary) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Campo(vm.sistema, { vm.sistema = it }, "Voz del cronista", minLineas = 4)
-                Campo(vm.pedido, { vm.pedido = it }, "Qué quieres que cuente", minLineas = 4)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Historia larga", style = MaterialTheme.typography.titleMedium)
+            Switch(checked = vm.larga, onCheckedChange = { vm.larga = it })
+        }
+        if (vm.larga) {
+            MarcoOrnado(color = MaterialTheme.colorScheme.primary) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Campo(vm.proyecto, vm::alCambiarProyecto, "Nombre del proyecto", minLineas = 1)
+                    Campo(vm.biblia, { vm.biblia = it }, "Biblia", minLineas = 6)
+                    Campo(vm.esquema, { vm.esquema = it }, "Esquema", minLineas = 4)
+                }
+            }
+            Text("Capítulo ${vm.siguiente}", style = MaterialTheme.typography.titleSmall)
+            Text("Capítulos seguidos ${vm.cantidadNovela}", style = MaterialTheme.typography.titleSmall)
+            Slider(
+                value = vm.cantidadNovela.toFloat(),
+                onValueChange = { vm.cantidadNovela = it.toInt().coerceIn(1, 10) },
+                valueRange = 1f..10f,
+                steps = 8,
+                colors = coloresSlider(),
+            )
+        } else {
+            MarcoOrnado(color = MaterialTheme.colorScheme.primary) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Campo(vm.sistema, { vm.sistema = it }, "Voz del cronista", minLineas = 4)
+                    Campo(vm.pedido, { vm.pedido = it }, "Qué quieres que cuente", minLineas = 4)
+                }
             }
         }
         Text("Modelo", style = MaterialTheme.typography.titleSmall)
@@ -98,16 +127,22 @@ fun PantallaHistorias(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Text(etiquetaLargo(vm.largo), style = MaterialTheme.typography.titleSmall)
-        Slider(value = vm.largo, onValueChange = { vm.largo = it }, valueRange = 200f..1000f, colors = coloresSlider())
-        Text("Creatividad ${"%.1f".format(vm.creatividad)}", style = MaterialTheme.typography.titleSmall)
-        Slider(value = vm.creatividad, onValueChange = { vm.creatividad = it }, valueRange = 0.2f..1.2f, colors = coloresSlider())
+        if (!vm.larga) {
+            Text(etiquetaLargo(vm.largo), style = MaterialTheme.typography.titleSmall)
+            Slider(value = vm.largo, onValueChange = { vm.largo = it }, valueRange = 200f..1000f, colors = coloresSlider())
+            Text("Creatividad ${"%.1f".format(vm.creatividad)}", style = MaterialTheme.typography.titleSmall)
+            Slider(value = vm.creatividad, onValueChange = { vm.creatividad = it }, valueRange = 0.2f..1.2f, colors = coloresSlider())
+        }
         BotonOro(
-            texto = if (vm.generando) "Escribiendo…" else "Escribir",
-            enabled = !vm.generando && vm.pedido.isNotBlank(),
+            texto = when {
+                vm.generando -> "Escribiendo…"
+                vm.larga -> "Continuar"
+                else -> "Escribir"
+            },
+            enabled = !vm.generando && (if (vm.larga) vm.proyecto.isNotBlank() else vm.pedido.isNotBlank()),
             onClick = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                vm.escribir()
+                if (vm.larga) vm.continuar() else vm.escribir()
             },
         )
         when {

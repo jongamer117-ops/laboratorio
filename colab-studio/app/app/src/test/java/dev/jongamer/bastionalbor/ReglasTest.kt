@@ -3,6 +3,7 @@ package dev.jongamer.bastionalbor
 import dev.jongamer.bastionalbor.logica.NEGATIVO_FORZADO
 import dev.jongamer.bastionalbor.logica.esMasNueva
 import dev.jongamer.bastionalbor.logica.extraerPedido
+import dev.jongamer.bastionalbor.logica.nombreSeguro
 import dev.jongamer.bastionalbor.logica.negativoForzado
 import dev.jongamer.bastionalbor.logica.parsearQr
 import dev.jongamer.bastionalbor.logica.quitarForzado
@@ -48,6 +49,12 @@ class ReglasTest {
         assertTrue(esMasNueva("v0.2.0", "0.1.0"))
         assertFalse(esMasNueva("v0.1.0", "0.1.0"))
         assertFalse(esMasNueva("0.1.0", "0.2.0"))
+    }
+
+    @Test
+    fun elNombreDelProyectoQuedaEnUnaCarpeta() {
+        assertEquals("el-asedio", nombreSeguro("El Asedio!"))
+        assertEquals("proyecto", nombreSeguro("   "))
     }
 
     @Test

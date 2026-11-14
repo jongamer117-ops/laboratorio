@@ -98,13 +98,17 @@ class ClienteColab(
         null
     }
 
-    suspend fun esperar(cuerpo: JSONObject, onAvance: suspend (Float, String) -> Unit): JSONObject {
+    suspend fun esperar(
+        cuerpo: JSONObject,
+        onAvance: suspend (Float, String) -> Unit,
+        minutos: Int = 15,
+    ): JSONObject {
         val (base, token) = credenciales()
         val (codigo, respuesta) = pedir("$base/api/trabajos", token, cuerpo)
         if (codigo == 401) throw ErrorEstudio.Token()
         if (codigo !in 200..299) throw interpretar(codigo, respuesta)
         val id = JSONObject(respuesta).getString("id")
-        val limite = System.currentTimeMillis() + 15 * 60_000L
+        val limite = System.currentTimeMillis() + minutos.coerceAtLeast(15) * 60_000L
         var fallos = 0
         while (System.currentTimeMillis() < limite) {
             try {
@@ -134,7 +138,7 @@ class ClienteColab(
             delay(2000)
         }
         throw ErrorEstudio.Servidor(
-            "Pasaron 15 minutos. El túnel pudo caducar; si el notebook sigue abierto, el trabajo quizá sigue ahí.",
+            "Pasaron $minutos minutos. El túnel pudo caducar; si el notebook sigue abierto, el trabajo quizá sigue ahí.",
         )
     }
 

@@ -6,6 +6,18 @@ import unittest
 import bastion_server as srv
 
 
+class NovelaTests(unittest.TestCase):
+    def test_el_estado_se_reemplaza_sin_borrar_la_biblia(self):
+        nuevo = srv.actualizar_seccion_estado("El reino.\n", "En el muro.")
+        self.assertIn("El reino.", nuevo)
+        self.assertEqual(nuevo.count("## Estado"), 1)
+        otra = srv.actualizar_seccion_estado(nuevo, "En la torre.")
+        self.assertEqual(otra.count("## Estado"), 1)
+        self.assertIn("En la torre.", otra)
+        self.assertNotIn("En el muro.", otra)
+        self.assertEqual(srv.nombre_seguro("El Asedio!"), "el-asedio")
+
+
 class DescubrimientoTests(unittest.TestCase):
     def test_el_mensaje_viaja_cifrado(self):
         claro = {"u": "https://x.trycloudflare.com", "t": "secreto", "b": "kaggle", "en": 1}
@@ -205,6 +217,40 @@ class ApiTests(unittest.TestCase):
                 headers=self.headers,
             )
             self.assertEqual(malo.status_code, 400)
+            self.estado.generar_novela = lambda payload, reportar: {
+                "tipo": "novela",
+                "proyecto": payload["proyecto"],
+                "biblia": payload["biblia"],
+                "siguiente": 2,
+                "capitulos": [
+                    {
+                        "numero": 1,
+                        "texto": "El bastión aguantó.",
+                        "resumen": "Aguantaron.",
+                        "nombre": "capitulo-001.txt",
+                    }
+                ],
+                "modelo": "test",
+            }
+            novela = self.cliente.post(
+                "/api/trabajos",
+                json={
+                    "tipo": "novela",
+                    "proyecto": "Asedio",
+                    "biblia": "Un reino en la frontera.",
+                    "esquema": "Tres actos.",
+                    "cantidad": 1,
+                },
+                headers=self.headers,
+            )
+            self.assertEqual(novela.status_code, 202, novela.get_json())
+            self.assertEqual(self._esperar(novela.get_json()["id"])["estado"], "listo")
+            prohibida = self.cliente.post(
+                "/api/trabajos",
+                json={"tipo": "novela", "proyecto": "x", "biblia": "loli nude", "esquema": "nada"},
+                headers=self.headers,
+            )
+            self.assertEqual(prohibida.status_code, 400)
             bueno = self.cliente.post(
                 "/api/trabajos",
                 json={"tipo": "relato", "pedido": "Un asedio.", "modelo": "14b"},

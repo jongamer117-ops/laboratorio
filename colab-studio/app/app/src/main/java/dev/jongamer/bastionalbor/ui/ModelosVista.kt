@@ -369,8 +369,17 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
     var mensaje by mutableStateOfSafe("")
     var error by mutableStateOfSafe<String?>(null)
     var resultado by mutableStateOfSafe<RelatoGuardado?>(null)
+    var larga by mutableStateOfSafe(false)
+    var proyecto by mutableStateOfSafe("asedio")
+    var biblia by mutableStateOfSafe("")
+    var esquema by mutableStateOfSafe("")
+    var siguiente by mutableStateOfSafe(1)
+    var cantidadNovela by mutableStateOfSafe(1)
+    private var resumenes by mutableStateOfSafe<List<Pair<Int, String>>>(emptyList())
+    private var cola by mutableStateOfSafe("")
 
     init {
+        repo.cargarNovelaLocal(proyecto)?.let { aplicarNovela(it) }
         if (repo.demoModo == "cargando") {
             generando = true
             mensaje = "Escribiendo…"
@@ -427,6 +436,69 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
                 generando = false
             }
         }
+    }
+
+    fun alCambiarProyecto(nombre: String) {
+        proyecto = nombre
+        if (biblia.isBlank() && esquema.isBlank()) {
+            repo.cargarNovelaLocal(nombre)?.let { aplicarNovela(it) }
+        }
+    }
+
+    fun continuar() {
+        if (generando) return
+        viewModelScope.launch {
+            val listo = runCatching { repo.conectarSiHaceFalta() }.getOrDefault(false)
+            if (!listo) {
+                error = textoAmigable(ErrorEstudio.SinConexion())
+                return@launch
+            }
+            generando = true
+            error = null
+            resultado = null
+            avance = 0.05f
+            mensaje = "Capítulo $siguiente…"
+            try {
+                val hecha = repo.continuarNovela(
+                    proyecto = proyecto,
+                    biblia = biblia,
+                    esquema = esquema,
+                    resumenes = resumenes,
+                    cola = cola,
+                    siguiente = siguiente,
+                    cantidad = cantidadNovela,
+                    modelo = modelo,
+                ) { valor, texto ->
+                    withContext(Dispatchers.Main) {
+                        avance = valor
+                        if (texto.isNotBlank()) mensaje = texto
+                    }
+                }
+                aplicarNovela(hecha)
+                val ultimo = hecha.capitulos.lastOrNull()
+                if (ultimo != null) {
+                    resultado = RelatoGuardado(
+                        texto = ultimo.texto,
+                        uri = android.net.Uri.parse(ultimo.uri),
+                        nombre = ultimo.nombre,
+                        modelo = modelo,
+                    )
+                }
+                mensaje = "Capítulo ${siguiente - 1} guardado en Documentos/BastionAlbor/${hecha.proyecto}"
+            } catch (fallo: Exception) {
+                error = textoAmigable(fallo)
+            } finally {
+                generando = false
+            }
+        }
+    }
+
+    private fun aplicarNovela(hecha: dev.jongamer.bastionalbor.datos.NovelaHecha) {
+        if (hecha.biblia.isNotBlank()) biblia = hecha.biblia
+        if (hecha.esquema.isNotBlank()) esquema = hecha.esquema
+        resumenes = hecha.resumenes
+        cola = hecha.cola
+        if (hecha.siguiente > 0) siguiente = hecha.siguiente
     }
 
     companion object {

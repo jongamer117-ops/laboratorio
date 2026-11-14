@@ -13,6 +13,12 @@ const val NEGATIVO_BASE = "lowres, bad anatomy, bad hands, extra digits, blurry,
 
 const val NEGATIVO_FORZADO = "child, loli, shota, young, underage"
 
+fun nombreSeguro(nombre: String): String {
+    val plano = java.text.Normalizer.normalize(nombre, java.text.Normalizer.Form.NFD)
+        .replace(Regex("\\p{Mn}+"), "")
+    return plano.lowercase().replace(Regex("[^0-9a-z]+"), "-").trim('-').take(40).ifBlank { "proyecto" }
+}
+
 fun nombreModeloTexto(id: String): String = when (id) {
     "32b" -> "32B sin censura"
     "14b" -> "14B sin censura"

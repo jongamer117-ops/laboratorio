@@ -77,6 +77,7 @@ Sin permiso amplio de almacenamiento (Android 13–16). La app escribe solo lo q
 | --- | --- | --- |
 | PNG | `Fotos/BastionAlbor` (MediaStore) | texto iTXt con prompt, semilla, pasos, guía y modelo |
 | Relato | `Documentos/BastionAlbor` (`.md`) | encabezado con fecha, voz y pedido |
+| Capítulo de novela | `Documentos/BastionAlbor/<proyecto>/capitulo-001.txt` | biblia y esquema en la misma carpeta; copia local en la app |
 | Historial | Room, en la app | prompt, ajustes, fecha y URI para reabrir o repetir |
 
 Cada resultado se guarda solo. También hay botones de guardar, compartir, copiar y borrar. La galería lee esa carpeta aunque reinstales, mientras el archivo siga en el celular (el historial Room sí se borra con la app; al abrir Galería se vuelven a enlistar los archivos propios).
@@ -89,9 +90,11 @@ Un túnel gratuito se corta si la respuesta HTTP tarda demasiado. Por eso no hay
 2. `GET /api/trabajos/{id}` → `en_cola`, `generando`, `listo` o `error`, más `avance`
 3. `GET /api/trabajos/{id}/resultado` → el PNG en base64 o el texto
 
-`GET /api/salud` no pide token y dice si hay GPU. La app hace polling cada 2 segundos, con reintentos si el túnel parpadea, y se rinde a los 15 minutos.
+`GET /api/salud` no pide token y dice si hay GPU. La app hace polling cada 2 segundos, con reintentos si el túnel parpadea, y se rinde a los 15 minutos (una novela de varios capítulos espera más, unos 10 minutos por capítulo).
 
-Imagen: `tipo`, `prompt`, `negativo`, `ancho`, `alto`, `cantidad` (1–4, en serie), `semilla`, `pasos` (hasta 40), `guia`. Texto: `tipo=relato`, `sistema`, `pedido`, `largo`, `creatividad`, `modelo` (`abliterado` u `oficial`).
+Imagen: `tipo`, `prompt`, `negativo`, `ancho`, `alto`, `cantidad` (1–4, en serie), `semilla`, `pasos` (hasta 40), `guia`. Texto de un tiro: `tipo=relato`, `sistema`, `pedido`, `largo`, `creatividad`, `modelo` (`7b`, `14b` o `32b`, solo sin censura). Novela: `tipo=novela`, `proyecto`, `biblia`, `esquema`, `resumenes`, `siguiente`, `cantidad` (1–10).
+
+En Historias, **Historia larga** apagada escribe un relato de un tiro. Encendida, el servidor guarda el proyecto en `/kaggle/working/BastionAlbor/novelas/<proyecto>` o, en Colab, en Drive si está montado (`/content/drive/MyDrive/BastionAlbor/novelas`) y si no en `/content/BastionAlbor/novelas`. Cada **Continuar** escribe el siguiente capítulo (unas 1,300–1,600 palabras, con gancho), lo resume y actualiza la sección `## Estado` de la biblia. La biblia y el esquema se editan en el celular; esa copia es la que se manda. El bloqueo de menores sigue valiendo para la biblia y el esquema.
 
 ## Límites que hay que conocer
 

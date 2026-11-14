@@ -695,37 +695,174 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
     }
 
 
-def generar_relato_real(payload: dict, reportar: Callable[[float, str], None], gestor: GestorModelos, cache: str) -> dict:
-    gestor.asegurar_texto(payload["modelo"], cache, reportar)
+def _completar(gestor: GestorModelos, sistema: str, pedido: str, max_new: int, temperatura: float) -> str:
     tok = gestor.tokenizer
     model = gestor.modelo_texto
     mensajes = []
-    if payload.get("sistema"):
-        mensajes.append({"role": "system", "content": payload["sistema"]})
-    mensajes.append({"role": "user", "content": payload["pedido"]})
+    if sistema:
+        mensajes.append({"role": "system", "content": sistema})
+    mensajes.append({"role": "user", "content": pedido})
     # tokenize=True devolvía tensores y rompía en transformers recientes.
     texto = tok.apply_chat_template(mensajes, tokenize=False, add_generation_prompt=True)
     enc = tok(texto, return_tensors="pt")
     enc = {k: v.to(model.device) for k, v in enc.items()}
-    largo = payload["largo"]
-    creatividad = payload["creatividad"]
-    reportar(0.2, "Escribiendo…")
     kwargs = dict(
-        max_new_tokens=largo,
-        do_sample=creatividad > 0.05,
+        max_new_tokens=max_new,
+        do_sample=temperatura > 0.05,
         top_p=0.9,
         repetition_penalty=1.05,
     )
-    if creatividad > 0.05:
-        kwargs["temperature"] = creatividad
+    if temperatura > 0.05:
+        kwargs["temperature"] = temperatura
     salida = model.generate(**enc, **kwargs)
     nuevos = salida[0][enc["input_ids"].shape[-1] :]
-    relato = tok.decode(nuevos, skip_special_tokens=True).strip()
+    return tok.decode(nuevos, skip_special_tokens=True).strip()
+
+
+def generar_relato_real(payload: dict, reportar: Callable[[float, str], None], gestor: GestorModelos, cache: str) -> dict:
+    gestor.asegurar_texto(payload["modelo"], cache, reportar)
+    reportar(0.2, "Escribiendo…")
+    relato = _completar(
+        gestor,
+        payload.get("sistema") or "",
+        payload["pedido"],
+        payload["largo"],
+        payload["creatividad"],
+    )
     reportar(0.95, "Listo")
     return {
         "tipo": "relato",
         "texto": relato,
         "modelo": gestor.id_texto,
+    }
+
+
+def nombre_seguro(nombre: str) -> str:
+    t = unicodedata.normalize("NFD", nombre or "")
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    t = re.sub(r"[^0-9A-Za-z]+", "-", t).strip("-").lower()
+    return (t[:40] or "proyecto")
+
+
+def carpeta_novela(nombre: str) -> str:
+    seguro = nombre_seguro(nombre)
+    if backend_actual() == "kaggle":
+        base = "/kaggle/working/BastionAlbor/novelas"
+    else:
+        drive = "/content/drive/MyDrive/BastionAlbor/novelas"
+        base = drive if os.path.isdir("/content/drive/MyDrive") else "/content/BastionAlbor/novelas"
+    ruta = os.path.join(base, seguro)
+    os.makedirs(ruta, exist_ok=True)
+    return ruta
+
+
+def actualizar_seccion_estado(biblia: str, estado: str) -> str:
+    marca = "## Estado"
+    bloque = f"{marca}\n\n{estado.strip()}\n"
+    texto = (biblia or "").strip()
+    if marca in texto:
+        cabeza = texto.split(marca, 1)[0].rstrip()
+        if not cabeza:
+            return bloque
+        return f"{cabeza}\n\n{bloque}"
+    if not texto:
+        return bloque
+    return f"{texto}\n\n{bloque}"
+
+
+def _leer_json(ruta: str, defecto):
+    if not os.path.isfile(ruta):
+        return defecto
+    with open(ruta, encoding="utf-8") as archivo:
+        return json.load(archivo)
+
+
+def _escribir(ruta: str, texto: str) -> None:
+    with open(ruta, "w", encoding="utf-8") as archivo:
+        archivo.write(texto)
+
+
+def generar_novela_real(payload: dict, reportar: Callable[[float, str], None], gestor: GestorModelos, cache: str) -> dict:
+    gestor.asegurar_texto(payload["modelo"], cache, reportar)
+    carpeta = carpeta_novela(payload["proyecto"])
+    biblia = payload["biblia"]
+    esquema = payload["esquema"]
+    resumenes = list(payload.get("resumenes") or [])
+    if not resumenes:
+        resumenes = _leer_json(os.path.join(carpeta, "resumenes.json"), [])
+    numero = int(payload["siguiente"] or 0)
+    if numero < 1:
+        numero = len(resumenes) + 1
+    cola = (payload.get("cola") or "").strip()
+    if not cola and numero > 1:
+        previo = os.path.join(carpeta, f"capitulo-{numero - 1:03d}.txt")
+        if os.path.isfile(previo):
+            with open(previo, encoding="utf-8") as archivo:
+                cola = archivo.read()[-1800:]
+    sistema_cap = (
+        "Eres el novelista de Bastión de Albor. Escribes en español de México. "
+        "Cada capítulo tiene entre 1300 y 1600 palabras y termina en un gancho. "
+        "No resumas: narra escenas. Respeta la biblia, el esquema y el estado. "
+        "No escribas contenido sexual ni romántico con menores de edad."
+    )
+    capitulos = []
+    total = payload["cantidad"]
+    for indice in range(total):
+        base = indice / total
+        reportar(base + 0.02, f"Capítulo {numero} · escribiendo")
+        recientes = resumenes[-6:]
+        lista = "\n".join(f"- Cap. {r['n']}: {r['texto']}" for r in recientes) or "(todavía no hay)"
+        pedido = (
+            f"Biblia:\n{biblia[:12000]}\n\n"
+            f"Esquema:\n{esquema[:6000]}\n\n"
+            f"Resúmenes recientes:\n{lista}\n\n"
+            f"Final del capítulo anterior:\n{cola[-1800:] or '(es el primer capítulo)'}\n\n"
+            f"Escribe el capítulo {numero}."
+        )
+        texto = _completar(gestor, sistema_cap, pedido, 2400, 0.85)
+        reportar(base + 0.55, f"Capítulo {numero} · resumiendo")
+        resumen = _completar(
+            gestor,
+            "Resume el capítulo en 120 a 180 palabras, en español y en pasado. "
+            "Di los hechos nuevos y el gancho final. Sin diálogo.",
+            texto,
+            420,
+            0.3,
+        )
+        reportar(base + 0.8, f"Capítulo {numero} · actualizando la biblia")
+        estado = _completar(
+            gestor,
+            "Reescribe solo el estado de la historia: dónde está cada quien, "
+            "qué acaba de pasar y qué queda pendiente. 150 a 250 palabras. "
+            "No repitas toda la biblia.",
+            f"Biblia actual:\n{biblia[:8000]}\n\nResumen del capítulo {numero}:\n{resumen}",
+            500,
+            0.3,
+        )
+        biblia = actualizar_seccion_estado(biblia, estado)
+        resumenes.append({"n": numero, "texto": resumen})
+        cola = texto[-1800:]
+        nombre = f"capitulo-{numero:03d}.txt"
+        _escribir(os.path.join(carpeta, nombre), texto)
+        capitulos.append(
+            {"numero": numero, "texto": texto, "resumen": resumen, "nombre": nombre}
+        )
+        numero += 1
+    _escribir(os.path.join(carpeta, "biblia.md"), biblia)
+    _escribir(os.path.join(carpeta, "esquema.md"), esquema)
+    with open(os.path.join(carpeta, "resumenes.json"), "w", encoding="utf-8") as archivo:
+        json.dump(resumenes, archivo, ensure_ascii=False, indent=1)
+    return {
+        "tipo": "novela",
+        "proyecto": nombre_seguro(payload["proyecto"]),
+        "biblia": biblia,
+        "esquema": esquema,
+        "resumenes": resumenes,
+        "cola": cola,
+        "siguiente": numero,
+        "capitulos": capitulos,
+        "modelo": gestor.id_texto,
+        "carpeta": carpeta,
     }
 
 
@@ -742,6 +879,9 @@ class Estado:
             payload, reportar, self.gestor, self.cache
         )
         self.generar_relato = lambda payload, reportar: generar_relato_real(
+            payload, reportar, self.gestor, self.cache
+        )
+        self.generar_novela = lambda payload, reportar: generar_novela_real(
             payload, reportar, self.gestor, self.cache
         )
 
@@ -772,6 +912,8 @@ class Estado:
         try:
             if trabajo.tipo == "imagen":
                 resultado = self.generar_imagen(trabajo.payload, reportar)
+            elif trabajo.tipo == "novela":
+                resultado = self.generar_novela(trabajo.payload, reportar)
             else:
                 resultado = self.generar_relato(trabajo.payload, reportar)
             with self.lock:
@@ -807,8 +949,10 @@ class Estado:
             payload = self._payload_imagen(data)
         elif tipo == "relato":
             payload = self._payload_relato(data)
+        elif tipo == "novela":
+            payload = self._payload_novela(data)
         else:
-            raise ValueError("El tipo tiene que ser «imagen» o «relato».")
+            raise ValueError("El tipo tiene que ser «imagen», «relato» o «novela».")
         trabajo = Trabajo(id=secrets.token_hex(8), tipo=tipo, payload=payload)
         with self.lock:
             self.trabajos[trabajo.id] = trabajo
@@ -874,6 +1018,37 @@ class Estado:
             "sistema": sistema,
             "largo": _entero(data.get("largo"), 700, 64, LARGO_MAX, "Extensión"),
             "creatividad": _flotante(data.get("creatividad"), 0.8, 0.0, 1.5, "Creatividad"),
+            "modelo": modelo,
+        }
+
+    def _payload_novela(self, data: dict) -> dict:
+        proyecto = (data.get("proyecto") or "").strip()
+        if not proyecto:
+            raise ValueError("Ponle nombre al proyecto.")
+        biblia = (data.get("biblia") or "").strip()
+        esquema = (data.get("esquema") or "").strip()
+        if len(biblia) > 20000 or len(esquema) > 8000:
+            raise ValueError("La biblia o el esquema son demasiado largos.")
+        if relato_bloqueado(biblia, esquema):
+            raise PromptBloqueado(
+                "No puedo escribir eso: la biblia o el esquema junta menores con contenido sexual o romántico."
+            )
+        disponibles = repos_texto()
+        modelo = (data.get("modelo") or defecto_texto()).strip().lower()
+        if modelo not in disponibles:
+            opciones = ", ".join(disponibles)
+            raise ValueError(f"En {backend_actual()} el relato puede usar: {opciones}.")
+        resumenes = data.get("resumenes") or []
+        if not isinstance(resumenes, list):
+            raise ValueError("Los resúmenes tienen que ser una lista.")
+        return {
+            "proyecto": proyecto,
+            "biblia": biblia,
+            "esquema": esquema,
+            "resumenes": resumenes[-12:],
+            "cola": (data.get("cola") or "")[-2000:],
+            "siguiente": _entero(data.get("siguiente"), 0, 0, 999, "Capítulo"),
+            "cantidad": _entero(data.get("cantidad"), 1, 1, 10, "Capítulos"),
             "modelo": modelo,
         }
 

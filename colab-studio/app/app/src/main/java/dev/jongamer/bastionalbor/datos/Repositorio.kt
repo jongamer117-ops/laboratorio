@@ -11,6 +11,7 @@ import android.net.Uri
 import android.util.Base64
 import android.util.Log
 import androidx.room.Room
+import dev.jongamer.bastionalbor.logica.nombreSeguro
 import dev.jongamer.bastionalbor.logica.PRESET_AIGIS
 import dev.jongamer.bastionalbor.logica.PngTexto
 import dev.jongamer.bastionalbor.logica.SISTEMA_DEFAULT
@@ -31,6 +32,24 @@ data class ImagenGuardada(
     val uri: Uri,
     val semilla: Long,
     val nombre: String,
+)
+
+data class CapituloHecho(
+    val numero: Int,
+    val texto: String,
+    val resumen: String,
+    val nombre: String,
+    val uri: String,
+)
+
+data class NovelaHecha(
+    val proyecto: String,
+    val biblia: String,
+    val esquema: String,
+    val resumenes: List<Pair<Int, String>>,
+    val cola: String,
+    val siguiente: Int,
+    val capitulos: List<CapituloHecho>,
 )
 
 data class RelatoGuardado(
@@ -183,6 +202,143 @@ class Repositorio(context: Context) {
             ),
         )
         RelatoGuardado(texto, uri, nombre, modeloUsado)
+    }
+
+    suspend fun continuarNovela(
+        proyecto: String,
+        biblia: String,
+        esquema: String,
+        resumenes: List<Pair<Int, String>>,
+        cola: String,
+        siguiente: Int,
+        cantidad: Int,
+        modelo: String,
+        onAvance: suspend (Float, String) -> Unit,
+    ): NovelaHecha = withContext(Dispatchers.IO) {
+        if (!conectarSiHaceFalta()) throw ErrorEstudio.SinConexion()
+        val cuerpo = JSONObject()
+            .put("tipo", "novela")
+            .put("proyecto", proyecto.trim())
+            .put("biblia", biblia)
+            .put("esquema", esquema)
+            .put("cola", cola)
+            .put("siguiente", siguiente)
+            .put("cantidad", cantidad)
+            .put("modelo", modelo)
+        val lista = org.json.JSONArray()
+        resumenes.takeLast(12).forEach { (n, texto) ->
+            lista.put(JSONObject().put("n", n).put("texto", texto))
+        }
+        cuerpo.put("resumenes", lista)
+        guardarNovelaLocal(
+            proyecto,
+            NovelaHecha(
+                proyecto = nombreSeguro(proyecto),
+                biblia = biblia,
+                esquema = esquema,
+                resumenes = resumenes.takeLast(12),
+                cola = cola,
+                siguiente = siguiente,
+                capitulos = emptyList(),
+            ),
+        )
+        val resultado = cliente.esperar(cuerpo, onAvance, minutos = 10 * cantidad)
+        val carpeta = "Documents/BastionAlbor/${nombreSeguro(proyecto)}"
+        val capitulosJson = resultado.getJSONArray("capitulos")
+        val capitulos = buildList {
+            for (i in 0 until capitulosJson.length()) {
+                val item = capitulosJson.getJSONObject(i)
+                val numero = item.getInt("numero")
+                val texto = item.getString("texto")
+                val nombre = item.optString("nombre", "capitulo-%03d.txt".format(numero))
+                val archivo = "# Capítulo $numero\n\n$texto\n"
+                val uri = archivos.guardarTextoEn(carpeta, nombre, archivo)
+                db.generaciones().insertar(
+                    Generacion(
+                        tipo = "relato",
+                        prompt = "Capítulo $numero · ${proyecto.trim()}",
+                        negativo = null,
+                        sistema = biblia,
+                        ajustesJson = JSONObject().put("proyecto", nombreSeguro(proyecto)).put("capitulo", numero).toString(),
+                        semilla = null,
+                        creadoEn = System.currentTimeMillis(),
+                        uri = uri.toString(),
+                        nombre = nombre,
+                        modelo = resultado.optString("modelo", modelo),
+                        marco = "oro",
+                    ),
+                )
+                add(CapituloHecho(numero, texto, item.optString("resumen"), nombre, uri.toString()))
+            }
+        }
+        val bibliaNueva = resultado.optString("biblia", biblia)
+        val esquemaNuevo = resultado.optString("esquema", esquema)
+        val resumenesNuevos = mutableListOf<Pair<Int, String>>()
+        val arr = resultado.optJSONArray("resumenes")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val r = arr.getJSONObject(i)
+                resumenesNuevos += r.optInt("n") to r.optString("texto")
+            }
+        }
+        archivos.guardarTextoEn(carpeta, "biblia.txt", bibliaNueva)
+        archivos.guardarTextoEn(carpeta, "esquema.txt", esquemaNuevo)
+        val hecha = NovelaHecha(
+            proyecto = resultado.optString("proyecto", nombreSeguro(proyecto)),
+            biblia = bibliaNueva,
+            esquema = esquemaNuevo,
+            resumenes = resumenesNuevos,
+            cola = resultado.optString("cola"),
+            siguiente = resultado.optInt("siguiente", siguiente + capitulos.size),
+            capitulos = capitulos,
+        )
+        guardarNovelaLocal(proyecto, hecha)
+        hecha
+    }
+
+    fun cargarNovelaLocal(nombre: String): NovelaHecha? {
+        val archivo = archivoNovela(nombre)
+        if (!archivo.exists()) return null
+        return try {
+            val json = JSONObject(archivo.readText())
+            val resumenes = mutableListOf<Pair<Int, String>>()
+            val arr = json.optJSONArray("resumenes")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val r = arr.getJSONObject(i)
+                    resumenes += r.optInt("n") to r.optString("texto")
+                }
+            }
+            NovelaHecha(
+                proyecto = json.optString("proyecto", nombreSeguro(nombre)),
+                biblia = json.optString("biblia"),
+                esquema = json.optString("esquema"),
+                resumenes = resumenes,
+                cola = json.optString("cola"),
+                siguiente = json.optInt("siguiente", 1),
+                capitulos = emptyList(),
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun guardarNovelaLocal(nombre: String, hecha: NovelaHecha) {
+        val arr = org.json.JSONArray()
+        hecha.resumenes.forEach { (n, texto) -> arr.put(JSONObject().put("n", n).put("texto", texto)) }
+        val json = JSONObject()
+            .put("proyecto", hecha.proyecto)
+            .put("biblia", hecha.biblia)
+            .put("esquema", hecha.esquema)
+            .put("cola", hecha.cola)
+            .put("siguiente", hecha.siguiente)
+            .put("resumenes", arr)
+        archivoNovela(nombre).writeText(json.toString())
+    }
+
+    private fun archivoNovela(nombre: String): java.io.File {
+        val dir = java.io.File(app.filesDir, "novelas").apply { mkdirs() }
+        return java.io.File(dir, "${nombreSeguro(nombre)}.json")
     }
 
     suspend fun borrar(item: Generacion) {
