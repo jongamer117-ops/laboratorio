@@ -1,0 +1,366 @@
+package dev.jongamer.bastionalbor.ui
+
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import dev.jongamer.bastionalbor.datos.AvisoVersion
+import dev.jongamer.bastionalbor.datos.Conexion
+import dev.jongamer.bastionalbor.datos.Generacion
+import dev.jongamer.bastionalbor.datos.ImagenGuardada
+import dev.jongamer.bastionalbor.datos.RelatoGuardado
+import dev.jongamer.bastionalbor.datos.Repositorio
+import dev.jongamer.bastionalbor.datos.textoAmigable
+import dev.jongamer.bastionalbor.logica.NEGATIVO_BASE
+import dev.jongamer.bastionalbor.logica.PRESET_AIGIS
+import dev.jongamer.bastionalbor.logica.SISTEMA_DEFAULT
+import dev.jongamer.bastionalbor.logica.parsearQr
+import dev.jongamer.bastionalbor.logica.quitarForzado
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+
+class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
+    var guardada by mutableStateOfSafe(Conexion())
+    var url by mutableStateOfSafe("")
+    var token by mutableStateOfSafe("")
+    var tema by mutableStateOfSafe("")
+    var enLinea by mutableStateOfSafe<Boolean?>(null)
+    var mensaje by mutableStateOfSafe("")
+    var ocupado by mutableStateOfSafe(false)
+    var aviso by mutableStateOfSafe<AvisoVersion?>(null)
+    var buscando by mutableStateOfSafe(false)
+    var bajando by mutableStateOfSafe(false)
+    var avanceBaja by mutableStateOfSafe(0f)
+    var mensajeUpdate by mutableStateOfSafe("")
+    private var sincronizado = false
+
+    init {
+        viewModelScope.launch {
+            repo.ajustes.conexion.collect { conexion ->
+                guardada = conexion
+                if (!sincronizado) {
+                    url = conexion.url
+                    token = conexion.token
+                    tema = conexion.tema
+                    sincronizado = true
+                }
+            }
+        }
+    }
+
+    fun guardarYProbar() {
+        viewModelScope.launch {
+            ocupado = true
+            mensaje = "Probando…"
+            repo.ajustes.guardar(url, token, tema)
+            try {
+                val salud = repo.cliente.salud()
+                enLinea = true
+                val gpu = salud.optString("gpu")
+                mensaje = if (gpu.isBlank() || gpu == "null") {
+                    "Responde, pero no veo una GPU. En Colab elige T4."
+                } else {
+                    "En línea · $gpu"
+                }
+            } catch (error: Exception) {
+                enLinea = false
+                mensaje = textoAmigable(error)
+            } finally {
+                ocupado = false
+            }
+        }
+    }
+
+    fun descubrir() {
+        viewModelScope.launch {
+            if (tema.isBlank()) {
+                mensaje = "Escribe el tema ntfy que imprimió el notebook."
+                return@launch
+            }
+            ocupado = true
+            mensaje = "Buscando el servidor…"
+            try {
+                val hallado = repo.cliente.descubrir(tema.trim())
+                if (hallado == null) {
+                    mensaje = "ntfy no tiene un aviso reciente. Ejecuta el notebook y espera el QR."
+                } else {
+                    url = hallado.url
+                    token = hallado.token
+                    if (hallado.tema.isNotBlank()) tema = hallado.tema
+                    repo.ajustes.guardar(url, token, tema)
+                    enLinea = null
+                    mensaje = "Encontré el servidor. Prueba la conexión."
+                }
+            } catch (error: Exception) {
+                mensaje = "No pude leer ntfy. Revisa el tema o la red."
+            } finally {
+                ocupado = false
+            }
+        }
+    }
+
+    fun aplicarQr(raw: String): Boolean {
+        val datos = parsearQr(raw) ?: return false
+        url = datos.url
+        token = datos.token
+        if (!datos.tema.isNullOrBlank()) tema = datos.tema
+        viewModelScope.launch { repo.ajustes.guardar(url, token, tema) }
+        enLinea = null
+        mensaje = "QR leído. Prueba la conexión."
+        return true
+    }
+
+    fun buscarActualizacion() {
+        viewModelScope.launch {
+            buscando = true
+            try {
+                aviso = repo.actualizador.buscar()
+                mensajeUpdate = if (aviso == null) "Estás en la última versión." else "Hay una versión ${aviso?.etiqueta}."
+            } catch (error: Exception) {
+                mensajeUpdate = textoAmigable(error)
+            } finally {
+                buscando = false
+            }
+        }
+    }
+
+    fun descargarEInstalar() {
+        val actual = aviso ?: return
+        viewModelScope.launch {
+            if (!repo.actualizador.puedeInstalar()) {
+                mensajeUpdate = "Permite instalar apps de Bastión de Albor y vuelve a tocar Descargar."
+                repo.actualizador.abrirAjustesInstalacion()
+                return@launch
+            }
+            bajando = true
+            avanceBaja = 0f
+            try {
+                val archivo = repo.actualizador.descargar(actual.urlApk) { avance ->
+                    withContext(Dispatchers.Main) { avanceBaja = avance }
+                }
+                bajando = false
+                repo.actualizador.instalar(archivo)
+            } catch (error: Exception) {
+                bajando = false
+                mensajeUpdate = textoAmigable(error)
+            }
+        }
+    }
+
+    companion object {
+        fun fabrica(repo: Repositorio): ViewModelProvider.Factory = viewModelFactory {
+            initializer { AjustesViewModel(repo) }
+        }
+    }
+}
+
+class ImagenViewModel(private val repo: Repositorio) : ViewModel() {
+    var prompt by mutableStateOfSafe(PRESET_AIGIS)
+    var negativo by mutableStateOfSafe(NEGATIVO_BASE)
+    var ancho by mutableStateOfSafe(832)
+    var alto by mutableStateOfSafe(1216)
+    var cantidad by mutableStateOfSafe(1)
+    var semillaTexto by mutableStateOfSafe("")
+    var pasos by mutableStateOfSafe(28f)
+    var guia by mutableStateOfSafe(5.5f)
+    var marco by mutableStateOfSafe("oro")
+    var generando by mutableStateOfSafe(false)
+    var avance by mutableStateOfSafe(0f)
+    var mensaje by mutableStateOfSafe("")
+    var error by mutableStateOfSafe<String?>(null)
+    var imagenes by mutableStateOfSafe<List<ImagenGuardada>>(emptyList())
+
+    init {
+        when (repo.demoModo) {
+            "cargando" -> {
+                generando = true
+                avance = 0.42f
+                mensaje = "Imagen 1 de 1 · paso 12 de 28"
+            }
+            "error" -> error = "La sesión de Colab está apagada o el túnel caducó. Abre el notebook, ejecútalo otra vez y vuelve a conectar."
+            "resultado" -> {
+                val bitmap = repo.demoBitmap
+                if (bitmap != null) {
+                    imagenes = listOf(ImagenGuardada(bitmap, android.net.Uri.EMPTY, 1, "vista-previa.png"))
+                    mensaje = "Vista previa local. En el celular real, esto llega desde Colab y se guarda solo."
+                }
+            }
+        }
+        viewModelScope.launch {
+            repo.rehacerImagen.collect { item ->
+                if (item != null) {
+                    aplicar(item)
+                    repo.rehacerImagen.value = null
+                }
+            }
+        }
+    }
+
+    fun generar() {
+        if (generando) return
+        viewModelScope.launch {
+            generando = true
+            error = null
+            imagenes = emptyList()
+            avance = 0.02f
+            mensaje = "Enviando el trabajo…"
+            try {
+                val semilla = semillaTexto.trim().toLongOrNull()
+                imagenes = repo.generarImagen(
+                    prompt = prompt,
+                    negativo = negativo,
+                    ancho = ancho,
+                    alto = alto,
+                    cantidad = cantidad,
+                    semilla = semilla,
+                    pasos = pasos.toInt(),
+                    guia = guia,
+                    marco = marco,
+                ) { valor, texto ->
+                    withContext(Dispatchers.Main) {
+                        avance = valor
+                        if (texto.isNotBlank()) mensaje = texto
+                    }
+                }
+                mensaje = "Guardada en Fotos/BastionAlbor"
+            } catch (fallo: Exception) {
+                error = textoAmigable(fallo)
+            } finally {
+                generando = false
+            }
+        }
+    }
+
+    fun rehacer(item: Generacion) {
+        aplicar(item)
+    }
+
+    private fun aplicar(item: Generacion) {
+        prompt = item.prompt
+        negativo = quitarForzado(item.negativo)
+        if (item.marco.isNotBlank()) marco = item.marco
+        semillaTexto = item.semilla?.toString().orEmpty()
+        runCatching {
+            val json = JSONObject(item.ajustesJson)
+            ancho = json.optInt("ancho", ancho)
+            alto = json.optInt("alto", alto)
+            pasos = json.optInt("pasos", pasos.toInt()).toFloat()
+            guia = json.optDouble("guia", guia.toDouble()).toFloat()
+            cantidad = json.optInt("cantidad", cantidad)
+        }
+    }
+
+    companion object {
+        fun fabrica(repo: Repositorio): ViewModelProvider.Factory = viewModelFactory {
+            initializer { ImagenViewModel(repo) }
+        }
+    }
+}
+
+class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
+    var sistema by mutableStateOfSafe(SISTEMA_DEFAULT)
+    var pedido by mutableStateOfSafe("")
+    var largo by mutableStateOfSafe(700f)
+    var creatividad by mutableStateOfSafe(0.8f)
+    var modelo by mutableStateOfSafe("abliterado")
+    var generando by mutableStateOfSafe(false)
+    var avance by mutableStateOfSafe(0f)
+    var mensaje by mutableStateOfSafe("")
+    var error by mutableStateOfSafe<String?>(null)
+    var resultado by mutableStateOfSafe<RelatoGuardado?>(null)
+
+    init {
+        if (repo.demoModo == "cargando") {
+            generando = true
+            mensaje = "Escribiendo…"
+            avance = 0.35f
+            pedido = "El primer asedio del bastión."
+        }
+        viewModelScope.launch {
+            repo.rehacerRelato.collect { item ->
+                if (item != null) {
+                    pedido = item.prompt
+                    if (!item.sistema.isNullOrBlank()) sistema = item.sistema
+                    runCatching {
+                        val json = JSONObject(item.ajustesJson)
+                        largo = json.optInt("largo", 700).toFloat()
+                        creatividad = json.optDouble("creatividad", 0.8).toFloat()
+                        modelo = json.optString("modelo", "abliterado")
+                    }
+                    repo.rehacerRelato.value = null
+                }
+            }
+        }
+    }
+
+    fun escribir() {
+        if (generando) return
+        viewModelScope.launch {
+            generando = true
+            error = null
+            resultado = null
+            avance = 0.05f
+            mensaje = "Enviando el trabajo…"
+            try {
+                resultado = repo.generarRelato(
+                    sistema = sistema,
+                    pedido = pedido,
+                    largo = largo.toInt(),
+                    creatividad = creatividad,
+                    modelo = modelo,
+                ) { valor, texto ->
+                    withContext(Dispatchers.Main) {
+                        avance = valor
+                        if (texto.isNotBlank()) mensaje = texto
+                    }
+                }
+                mensaje = "Guardado en Documentos/BastionAlbor"
+            } catch (fallo: Exception) {
+                error = textoAmigable(fallo)
+            } finally {
+                generando = false
+            }
+        }
+    }
+
+    companion object {
+        fun fabrica(repo: Repositorio): ViewModelProvider.Factory = viewModelFactory {
+            initializer { HistoriasViewModel(repo) }
+        }
+    }
+}
+
+class GaleriaViewModel(private val repo: Repositorio) : ViewModel() {
+    val piezas = repo.generaciones.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    var mensaje by mutableStateOfSafe<String?>(null)
+
+    init {
+        viewModelScope.launch { repo.reconciliar() }
+    }
+
+    fun borrar(item: Generacion) {
+        viewModelScope.launch {
+            repo.borrar(item)
+            mensaje = "Borrado del celular."
+        }
+    }
+
+    fun rehacer(item: Generacion) {
+        if (item.tipo == "imagen") repo.rehacerImagen.value = item else repo.rehacerRelato.value = item
+    }
+
+    companion object {
+        fun fabrica(repo: Repositorio): ViewModelProvider.Factory = viewModelFactory {
+            initializer { GaleriaViewModel(repo) }
+        }
+    }
+}
+
+private fun <T> mutableStateOfSafe(valor: T) = androidx.compose.runtime.mutableStateOf(valor)

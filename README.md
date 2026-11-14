@@ -56,3 +56,13 @@ webapp/
 ## Offline-first
 
 Todo corre en el dispositivo. Sin red no hay LLM, pero el motor determinista sigue vivo.
+
+## Bastión de Albor (Colab + Android)
+
+Estudio aparte, en `colab-studio/`. No cambia `webapp/` ni este motor. Sirve para pintar personajes y escribir relatos con la T4 gratuita de Colab, desde una app en el celular.
+
+Pasos cortos (el detalle, los límites y los secretos de firma están en [`colab-studio/README.md`](colab-studio/README.md)):
+
+1. Baja el APK desde [Releases](https://github.com/jongamer117-ops/laboratorio/releases) e instálalo.
+2. Abre `colab-studio/server/Servidor_Colab.ipynb` en Colab, elige GPU T4 y ejecuta todo.
+3. En la app, escanea el QR (o pega URL y token, o busca el tema ntfy) y genera.
