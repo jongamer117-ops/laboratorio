@@ -13,18 +13,32 @@ android {
         applicationId = "dev.jongamer.bastionalbor"
         minSdk = 33
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
     }
 
-    val keystorePath = System.getenv("BASTION_KEYSTORE_PATH")
+    fun secreto(nombre: String, defecto: String = ""): String {
+        val deEntorno = System.getenv(nombre)
+        if (!deEntorno.isNullOrBlank()) return deEntorno
+        val dePropiedad = findProperty(nombre) as? String
+        if (!dePropiedad.isNullOrBlank()) return dePropiedad
+        return defecto
+    }
+
+    val keystoreDelEntorno = System.getenv("BASTION_KEYSTORE_PATH")
+    val keystoreDelRepo = rootProject.file("keystore/bastion-release.jks")
+    val keystoreFijo = when {
+        !keystoreDelEntorno.isNullOrBlank() -> file(keystoreDelEntorno)
+        keystoreDelRepo.isFile -> keystoreDelRepo
+        else -> null
+    }
     signingConfigs {
-        if (!keystorePath.isNullOrBlank()) {
+        if (keystoreFijo != null) {
             create("bastion") {
-                storeFile = file(keystorePath)
-                storePassword = System.getenv("BASTION_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("BASTION_KEY_ALIAS")
-                keyPassword = System.getenv("BASTION_KEY_PASSWORD")
+                storeFile = keystoreFijo
+                storePassword = secreto("BASTION_KEYSTORE_PASSWORD")
+                keyAlias = secreto("BASTION_KEY_ALIAS", "bastion")
+                keyPassword = secreto("BASTION_KEY_PASSWORD")
             }
         }
     }
@@ -36,7 +50,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            signingConfig = if (!keystorePath.isNullOrBlank()) {
+            signingConfig = if (keystoreFijo != null) {
                 signingConfigs.getByName("bastion")
             } else {
                 signingConfigs.getByName("debug")

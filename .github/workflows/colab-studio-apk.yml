@@ -76,6 +76,10 @@ jobs:
             echo "BASTION_KEY_PASSWORD=$KPASS" >> "$GITHUB_ENV"
             echo "mode=release" >> "$GITHUB_OUTPUT"
             echo "APK firmado con el keystore de los secretos."
+          elif [ -f "$GITHUB_WORKSPACE/colab-studio/app/keystore/bastion-release.jks" ]; then
+            echo "BASTION_KEYSTORE_PATH=$GITHUB_WORKSPACE/colab-studio/app/keystore/bastion-release.jks" >> "$GITHUB_ENV"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "Sin secretos. El APK se firma con el keystore fijo del repo."
           else
             keytool -genkeypair -v \
               -keystore "$RUNNER_TEMP/debug.keystore" \
@@ -87,7 +91,7 @@ jobs:
             echo "BASTION_KEY_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
             echo "BASTION_KEY_PASSWORD=android" >> "$GITHUB_ENV"
             echo "mode=debug" >> "$GITHUB_OUTPUT"
-            echo "Faltan secretos. El APK se firma con una llave de depuración nueva."
+            echo "Faltan secretos y el keystore del repo. El APK se firma con una llave de depuración nueva."
           fi
 
       - name: Compilar
@@ -99,8 +103,9 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           origen="colab-studio/app/app/build/outputs/apk/release/app-release.apk"
+          version="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' colab-studio/app/app/build.gradle.kts | head -n 1)"
           if [ "${{ steps.firma.outputs.mode }}" = "release" ]; then
-            cp "$origen" dist/BastionAlbor.apk
+            cp "$origen" "dist/BastionAlbor-v${version}.apk"
           else
             cp "$origen" dist/BastionAlbor-debug-firmado.apk
           fi

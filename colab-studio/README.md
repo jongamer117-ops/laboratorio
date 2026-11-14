@@ -11,9 +11,9 @@ El motor de historias de `webapp/` no se toca. Todo esto está en `colab-studio/
 ### 1. Instalar la app
 
 1. Entra a [Releases](https://github.com/jongamer117-ops/laboratorio/releases) de este repositorio.
-2. Baja el APK `BastionAlbor.apk` (si todavía no hay secretos de firma, el archivo se llama `BastionAlbor-debug-firmado.apk`).
+2. Baja el APK `BastionAlbor-v0.1.2.apk`.
 3. En el celular, abre el archivo. Android pide permiso para instalar apps de este origen: acéptalo.
-4. Si más adelante firmas con otra llave, Android no deja actualizar encima. Hay que desinstalar antes. Por eso conviene crear el keystore **antes** de la primera instalación que quieras conservar.
+4. A partir de 0.1.2 la firma es fija, así que la siguiente versión se instala encima. La 0.1.1 salió con una llave de depuración distinta: si esa está instalada, hay que desinstalarla una sola vez.
 
 La app también puede buscar una versión nueva en Ajustes → Buscar actualización, bajar el APK y abrir el instalador.
 
@@ -145,7 +145,7 @@ Cada sesión fría baja varios gigas y puede tardar muchos minutos. Con `USAR_GO
 
 El workflow `.github/workflows/colab-studio-apk.yml` corre en cada push y en cada pull request que toque `colab-studio/`, y también a mano. Compila el APK y lo deja como artefacto del run.
 
-**Publica un Release solo cuando etiquetas `v*`** (por ejemplo `v0.1.1`). La app compara `versionName` con esa etiqueta.
+**Publica un Release solo cuando etiquetas `v*`** (por ejemplo `v0.1.2`). La app compara `versionName` con esa etiqueta.
 
 Cada imagen sale dos veces si `rembg` puede quitar el fondo: un PNG transparente y otro con fondo negro. Va activado por defecto. En Generar imagen solo se ven el prompt, los pasos, la guía, la cantidad y la semilla. El estilo anime o realista se elige en Ajustes. El servidor antepone etiquetas de calidad y el negativo de menores, y usa Euler a con Illustrious.
 
@@ -158,18 +158,7 @@ Secretos del repositorio (Settings → Secrets and variables → Actions), los c
 | `BASTION_KEY_ALIAS` | Alias de la llave |
 | `BASTION_KEY_PASSWORD` | Contraseña de la llave |
 
-Crear la llave una vez, en tu computadora, y no la subas al git:
-
-```bash
-keytool -genkeypair -v \
-  -keystore bastion-upload.jks \
-  -alias bastion \
-  -keyalg RSA -keysize 2048 -validity 10000 \
-  -dname "CN=Jonathan, OU=Bastion, O=Bastion, L=CDMX, ST=CDMX, C=MX"
-base64 -w0 bastion-upload.jks
-```
-
-Guarda el `.jks` y las contraseñas fuera del repo. Sin los cuatro secretos, el workflow **igual construye** el APK, firmado con una llave de depuración **nueva en cada run**. Ese APK se instala, pero no actualiza una instalación anterior (la firma no coincide) y no sirve para Play. El artefacto se llama `BastionAlbor-debug-firmado.apk`.
+Si los cuatro secretos existen, el workflow firma con esa llave. Si faltan, usa el keystore fijo del repo, `colab-studio/app/keystore/bastion-release.jks` (alias `bastion`, contraseña `bastion-albor` en `gradle.properties`). Es una app personal y la llave va en el git a propósito: así cada APK trae el mismo certificado y Android deja instalar la versión nueva encima. El archivo publicado se llama `BastionAlbor-v0.1.2.apk`. Solo si tampoco está ese keystore, el workflow crea una llave de depuración nueva y el artefacto pasa a llamarse `BastionAlbor-debug-firmado.apk`.
 
 Para publicar:
 

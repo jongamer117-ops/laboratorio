@@ -3,6 +3,7 @@ build/
 local.properties
 *.jks
 *.keystore
+!app/keystore/bastion-release.jks
 captures/
 .idea/
 *.iml
