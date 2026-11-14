@@ -7,11 +7,11 @@ import javax.net.ssl.SSLException
 
 sealed class ErrorEstudio(message: String) : Exception(message) {
     class SinConexion : ErrorEstudio(
-        "Falta la conexión. Escanea el QR del notebook o pega la URL y el token.",
+        "Esperando al notebook… Ábrelo en Colab o Kaggle y deja la celda corriendo.",
     )
 
     class Apagado : ErrorEstudio(
-        "La sesión de Colab está apagada o el túnel caducó. Abre el notebook, ejecútalo otra vez y vuelve a conectar.",
+        "El notebook está apagado o el túnel caducó. Vuelve a ejecutar la celda y espera un momento.",
     )
 
     class Token : ErrorEstudio("El token no coincide. Escanéalo de nuevo desde el notebook.")

@@ -72,8 +72,8 @@ fun PantallaHistorias(
         )
         if (!conectado) {
             BannerAviso(
-                texto = "No hay servidor. Conecta el notebook para que el cronista responda.",
-                accion = "Conectar",
+                texto = "Esperando al notebook… Ábrelo en Colab o Kaggle y deja la celda corriendo.",
+                accion = "Ver ajustes",
                 onAccion = onAjustes,
             )
         }

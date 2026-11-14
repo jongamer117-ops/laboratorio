@@ -37,6 +37,12 @@ REPO_TEXTO_32B = "huihui-ai/Qwen2.5-32B-Instruct-abliterated"
 REPO_TEXTO_ABLIT = REPO_TEXTO_7B
 MODELOS_IMAGEN = ("ilustrious", "flux")
 LARGO_TROZO = 75
+# Canal fijo, el mismo en los dos notebooks y en la app. El mensaje va cifrado.
+DISCOVERY_TOPIC = "bastion-albor-c7e1a94f6b2d4803e5a8c1f07d3b69e24a51f0c8"
+DISCOVERY_KEY_B64 = "RTMuKJDbQrFucahtdaTVNo+7w+kS6UrYahOb6tzIs78="
+DISCOVERY_AAD = b"bastion-albor"
+PREFIJO_ANIME = "masterpiece, best quality, "
+PREFIJO_REALISTA = "highly detailed, sharp focus, "
 
 # Términos que siempre se añaden al negativo de imagen. No se pueden quitar.
 NEGATIVO_FORZADO = "child, loli, shota, young, underage"
@@ -480,6 +486,9 @@ def _cargar_ilustrious(cache: str, reportar: Callable[[float, str], None]):
     if hasattr(pipe, "requires_safety_checker"):
         pipe.requires_safety_checker = False
     pipe = pipe.to("cuda")
+    from diffusers import EulerAncestralDiscreteScheduler
+
+    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
     _activar_tiling(pipe)
     if hasattr(pipe, "enable_attention_slicing"):
         pipe.enable_attention_slicing()
@@ -555,6 +564,26 @@ def _semilla_de(payload: dict, indice: int) -> int:
     return int(semilla) + indice
 
 
+def prompt_con_calidad(prompt: str, modelo: str) -> str:
+    prefijo = PREFIJO_REALISTA if modelo == "flux" else PREFIJO_ANIME
+    if prompt.lower().startswith(prefijo.strip().lower()):
+        return prompt
+    return prefijo + prompt
+
+
+def separar_fondo(imagen):
+    """rembg en CPU: PNG transparente y la misma figura sobre negro."""
+    from PIL import Image
+    from rembg import remove
+
+    rgba = remove(imagen.convert("RGBA"))
+    if rgba.mode != "RGBA":
+        rgba = rgba.convert("RGBA")
+    base = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+    negro = Image.alpha_composite(base, rgba).convert("RGB")
+    return rgba, negro
+
+
 def _guardar_png(imagen) -> str:
     buf = io.BytesIO()
     imagen.save(buf, format="PNG")
@@ -614,13 +643,45 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
         except TypeError:
             resultado = pipe(**kwargs)
         nombre = time.strftime("bastion-%Y%m%d-%H%M%S") + f"-{indice + 1}.png"
-        imagenes.append(
-            {
-                "png_base64": _guardar_png(resultado.images[0]),
-                "semilla": semilla_i,
-                "nombre": nombre,
-            }
-        )
+        cruda = resultado.images[0]
+        if payload.get("quitar_fondo", True):
+            try:
+                transparente, negro = separar_fondo(cruda)
+                imagenes.append(
+                    {
+                        "png_base64": _guardar_png(transparente),
+                        "semilla": semilla_i,
+                        "nombre": nombre.replace(".png", "-transparente.png"),
+                        "variante": "transparente",
+                    }
+                )
+                imagenes.append(
+                    {
+                        "png_base64": _guardar_png(negro),
+                        "semilla": semilla_i,
+                        "nombre": nombre.replace(".png", "-negro.png"),
+                        "variante": "fondo_negro",
+                    }
+                )
+            except Exception as exc:
+                reportar(0.9, f"No pude quitar el fondo ({exc}). Te dejo la imagen completa.")
+                imagenes.append(
+                    {
+                        "png_base64": _guardar_png(cruda),
+                        "semilla": semilla_i,
+                        "nombre": nombre,
+                        "variante": "original",
+                    }
+                )
+        else:
+            imagenes.append(
+                {
+                    "png_base64": _guardar_png(cruda),
+                    "semilla": semilla_i,
+                    "nombre": nombre,
+                    "variante": "original",
+                }
+            )
         del resultado
         gc.collect()
         if torch.cuda.is_available():
@@ -767,6 +828,8 @@ class Estado:
                 "Este servidor no genera imágenes con esos términos. "
                 "El negativo de menores se aplica siempre y no se puede quitar."
             )
+        modelo = _modelo_imagen(data.get("modelo"))
+        prompt = prompt_con_calidad(prompt, modelo)
         ancho = _multiplo_8(_entero(data.get("ancho"), 832, 512, ANCHO_MAX, "Ancho"), "Ancho")
         alto = _multiplo_8(_entero(data.get("alto"), 1216, 512, ALTO_MAX, "Alto"), "Alto")
         if ancho * alto > ANCHO_MAX * ALTO_MAX:
@@ -785,7 +848,8 @@ class Estado:
             "semilla": semilla_val,
             "pasos": _entero(data.get("pasos"), 28, 1, PASOS_MAX, "Pasos"),
             "guia": _flotante(data.get("guia"), 5.5, 0.0, 12.0, "Guía"),
-            "modelo": _modelo_imagen(data.get("modelo")),
+            "modelo": modelo,
+            "quitar_fondo": _bandera(data.get("quitar_fondo"), True),
         }
 
     def _payload_relato(self, data: dict) -> dict:
@@ -840,7 +904,7 @@ class Estado:
         return {
             "ok": True,
             "nombre": "Bastión de Albor",
-            "version": "0.1.0",
+            "version": "0.1.1",
             "backend": backend_actual(),
             "gpu": gpu,
             "gpus": gpus,
@@ -932,6 +996,47 @@ def create_app(estado: Estado):
         return jsonify(trabajo.resultado)
 
     return app
+
+
+def _bandera(valor, defecto: bool = True) -> bool:
+    if valor is None or valor == "":
+        return defecto
+    if isinstance(valor, bool):
+        return valor
+    return str(valor).strip().lower() not in ("0", "false", "no", "off")
+
+
+def cifrar_descubrimiento(datos: dict) -> str:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    clave = base64.b64decode(DISCOVERY_KEY_B64)
+    nonce = os.urandom(12)
+    claro = json.dumps(datos, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    cifrado = AESGCM(clave).encrypt(nonce, claro, DISCOVERY_AAD)
+    return base64.b64encode(nonce + cifrado).decode("ascii")
+
+
+def descifrar_descubrimiento(mensaje: str) -> dict:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    crudo = base64.b64decode(mensaje.strip())
+    nonce, cifrado = crudo[:12], crudo[12:]
+    claro = AESGCM(base64.b64decode(DISCOVERY_KEY_B64)).decrypt(nonce, cifrado, DISCOVERY_AAD)
+    return json.loads(claro.decode("utf-8"))
+
+
+def publicar_descubrimiento(url: str, token: str) -> None:
+    cuerpo = cifrar_descubrimiento(
+        {"u": url, "t": token, "b": backend_actual(), "en": time.time()}
+    ).encode("ascii")
+    req = urllib.request.Request(
+        f"https://ntfy.sh/{DISCOVERY_TOPIC}",
+        data=cuerpo,
+        headers={"Title": "Bastion", "Content-Type": "text/plain; charset=utf-8"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        resp.read()
 
 
 def _publicar_ntfy(tema: str, url: str, token: str) -> None:
@@ -1033,10 +1138,16 @@ def arrancar(puerto: int = 7860) -> None:
     )
     url = _esperar_tunel(proceso)
     try:
-        _publicar_ntfy(tema, url, token)
-        print("Publicado en ntfy.sh/" + tema)
+        publicar_descubrimiento(url, token)
+        print("El celular puede encontrarte solo. Tema de descubrimiento listo.")
     except Exception as exc:
-        print("No se pudo publicar en ntfy (la app igual puede escanear el QR):", exc)
+        print("No se publicó el descubrimiento automático:", exc)
+    if tema and tema != DISCOVERY_TOPIC:
+        try:
+            _publicar_ntfy(tema, url, token)
+            print("También publicado en ntfy.sh/" + tema)
+        except Exception as exc:
+            print("No se pudo publicar en el tema extra:", exc)
     _mostrar_qr(url, token, tema)
     print("Deja esta celda corriendo. Si el túnel se cae, vuelve a ejecutarla.", flush=True)
     try:

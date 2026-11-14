@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import dev.jongamer.bastionalbor.datos.AvisoVersion
+import dev.jongamer.bastionalbor.datos.ErrorEstudio
 import dev.jongamer.bastionalbor.datos.Conexion
 import dev.jongamer.bastionalbor.datos.Generacion
 import dev.jongamer.bastionalbor.datos.ImagenGuardada
@@ -31,6 +32,8 @@ import org.json.JSONObject
 class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
     var guardada by mutableStateOfSafe(Conexion())
     var servidor by mutableStateOfSafe("colab")
+    var manual by mutableStateOfSafe(false)
+    var modeloImagen by mutableStateOfSafe("ilustrious")
     var modelosImagen by mutableStateOfSafe(listOf("ilustrious", "flux"))
     var modelosTexto by mutableStateOfSafe(listOf("7b", "14b"))
     var url by mutableStateOfSafe("")
@@ -52,6 +55,8 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
                 guardada = prefs.activa
                 if (!sincronizado) {
                     servidor = prefs.servidor
+                    manual = prefs.manual
+                    modeloImagen = prefs.modeloImagen
                     url = prefs.activa.url
                     token = prefs.activa.token
                     tema = prefs.activa.tema
@@ -60,6 +65,46 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
                 }
             }
         }
+        vigilar()
+    }
+
+    private fun vigilar() {
+        viewModelScope.launch {
+            var espera = 2_000L
+            while (true) {
+                if (!manual) {
+                    val ok = runCatching { repo.conectarSiHaceFalta() }.getOrDefault(false)
+                    if (ok && repo.ajustes.actual().url.isNotBlank()) {
+                        enLinea = true
+                        val prefs = repo.ajustes.leer()
+                        servidor = prefs.servidor
+                        guardada = prefs.activa
+                        if (mensaje.isBlank() || mensaje.startsWith("Esperando")) {
+                            mensaje = if (prefs.servidor == "kaggle") "Conectado a Kaggle" else "Conectado a Colab"
+                        }
+                        aplicarModelosEstaticos()
+                        espera = 15_000L
+                    } else {
+                        enLinea = false
+                        mensaje = "Esperando al notebook…"
+                        kotlinx.coroutines.delay(espera)
+                        espera = (espera * 2).coerceAtMost(20_000L)
+                        continue
+                    }
+                }
+                kotlinx.coroutines.delay(espera)
+            }
+        }
+    }
+
+    fun fijarManual(activo: Boolean) {
+        manual = activo
+        viewModelScope.launch { repo.ajustes.fijarManual(activo) }
+    }
+
+    fun fijarModeloImagen(modelo: String) {
+        modeloImagen = if (modelo == "flux") "flux" else "ilustrious"
+        viewModelScope.launch { repo.ajustes.fijarModeloImagen(modeloImagen) }
     }
 
     fun guardarYProbar() {
@@ -246,9 +291,14 @@ class ImagenViewModel(private val repo: Repositorio) : ViewModel() {
         }
     }
 
-    fun generar() {
+    fun generar(modelo: String) {
         if (generando) return
         viewModelScope.launch {
+            val listo = runCatching { repo.conectarSiHaceFalta() }.getOrDefault(false)
+            if (!listo) {
+                error = textoAmigable(ErrorEstudio.SinConexion())
+                return@launch
+            }
             generando = true
             error = null
             imagenes = emptyList()
@@ -259,14 +309,14 @@ class ImagenViewModel(private val repo: Repositorio) : ViewModel() {
                 imagenes = repo.generarImagen(
                     prompt = prompt,
                     negativo = negativo,
-                    ancho = ancho,
-                    alto = alto,
+                    ancho = 832,
+                    alto = 1216,
                     cantidad = cantidad,
                     semilla = semilla,
                     pasos = pasos.toInt(),
                     guia = guia,
-                    marco = marco,
-                    modelo = modeloImagen,
+                    marco = "oro",
+                    modelo = modelo,
                 ) { valor, texto ->
                     withContext(Dispatchers.Main) {
                         avance = valor
@@ -347,6 +397,11 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
     fun escribir() {
         if (generando) return
         viewModelScope.launch {
+            val listo = runCatching { repo.conectarSiHaceFalta() }.getOrDefault(false)
+            if (!listo) {
+                error = textoAmigable(ErrorEstudio.SinConexion())
+                return@launch
+            }
             generando = true
             error = null
             resultado = null

@@ -11,9 +11,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -35,44 +40,50 @@ fun PantallaAjustes(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text("Ajustes", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.semantics { heading() })
-        Text("Servidor", style = MaterialTheme.typography.titleSmall)
+        Text(
+            estadoConexion(vm),
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (vm.enLinea == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (vm.mensaje.isNotBlank() && !vm.mensaje.startsWith("Conectado")) {
+            Text(vm.mensaje, style = MaterialTheme.typography.bodyMedium)
+        }
+        Text("Estilo del retrato", style = MaterialTheme.typography.titleSmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ChipBastion(vm.servidor != "kaggle", { vm.elegirServidor("colab") }, "Colab")
-            ChipBastion(vm.servidor == "kaggle", { vm.elegirServidor("kaggle") }, "Kaggle")
+            ChipBastion(vm.modeloImagen != "flux", { vm.fijarModeloImagen("ilustrious") }, "Anime")
+            ChipBastion(vm.modeloImagen == "flux", { vm.fijarModeloImagen("flux") }, "Realista")
         }
         Text(
-            "Imagen: Illustrious y Flux. Relatos: ${vm.modelosTexto.joinToString(" y ") { nombreModeloTexto(it) }}.",
+            "Relatos: ${vm.modelosTexto.joinToString(" y ") { nombreModeloTexto(it) }}.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Text("Modelo del relato", style = MaterialTheme.typography.titleSmall)
         Text(
-            estadoConexion(vm),
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (vm.enLinea == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            "Se elige en Historias. El servidor conectado decide cuáles caben.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        MarcoOrnado(color = MaterialTheme.colorScheme.primary) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Campo(vm.url, { vm.url = it }, "URL del túnel", unaLinea = true)
-                Campo(vm.token, { vm.token = it }, "Token", unaLinea = true)
-                Campo(vm.tema, { vm.tema = it }, "Tema ntfy", unaLinea = true)
-                Text(
-                    "El tema es un secreto: quien lo conozca puede leer el token.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        var avanzado by remember { mutableStateOf(false) }
+        TextButton(onClick = { avanzado = !avanzado }, modifier = Modifier.heightIn(min = 48.dp)) {
+            Text(if (avanzado) "Ocultar avanzado" else "Avanzado")
         }
-        BotonOro("Escanear QR", true, onEscanear)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = vm::descubrir, enabled = !vm.ocupado, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text("Buscar en ntfy")
+        if (avanzado) {
+            Text(
+                "La app encuentra el notebook sola. Esto solo hace falta si ese canal no responde.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("Usar conexión manual", modifier = Modifier.weight(1f))
+                Switch(checked = vm.manual, onCheckedChange = vm::fijarManual)
             }
+            Campo(vm.url, { vm.url = it }, "URL del túnel", unaLinea = true)
+            Campo(vm.token, { vm.token = it }, "Token", unaLinea = true)
+            BotonOro("Escanear QR", true, onEscanear)
             TextButton(onClick = vm::guardarYProbar, enabled = !vm.ocupado, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text(if (vm.ocupado) "Probando…" else "Probar conexión")
+                Text(if (vm.ocupado) "Probando…" else "Guardar y probar")
             }
-        }
-        if (vm.mensaje.isNotBlank()) {
-            Text(vm.mensaje, style = MaterialTheme.typography.bodyMedium)
         }
         Text("Actualización", style = MaterialTheme.typography.titleLarge)
         Text(
@@ -100,7 +111,7 @@ fun PantallaAjustes(
         }
         Text("Para que funcione", style = MaterialTheme.typography.titleLarge)
         Text(
-            "Deja abierta la pestaña de Colab: si se duerme, la URL deja de servir. Cada ejecución del notebook crea un túnel nuevo. Las imágenes van a Fotos/BastionAlbor y los relatos a Documentos/BastionAlbor. Para instalar una versión nueva, permite orígenes desconocidos.",
+            "Deja abierta la pestaña del notebook: si se duerme, el túnel deja de servir. La app lo vuelve a encontrar sola. Las imágenes van a Fotos/BastionAlbor y los relatos a Documentos/BastionAlbor. Para instalar una versión nueva, permite orígenes desconocidos.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -108,13 +119,9 @@ fun PantallaAjustes(
     }
 }
 
-private fun estadoConexion(vm: AjustesViewModel): String {
-    val nombre = if (vm.servidor == "kaggle") "Kaggle" else "Colab"
-    val estado = when {
-        vm.guardada.url.isBlank() -> "sin servidor"
-        vm.enLinea == true -> "en línea"
-        vm.enLinea == false -> "apagado"
-        else -> "guardado, sin probar"
-    }
-    return "$nombre · $estado"
+private fun estadoConexion(vm: AjustesViewModel): String = when {
+    vm.manual && vm.guardada.url.isBlank() -> "Conexión manual, sin datos"
+    vm.enLinea == true && vm.servidor == "kaggle" -> "Conectado a Kaggle"
+    vm.enLinea == true -> "Conectado a Colab"
+    else -> "Esperando al notebook…"
 }

@@ -236,6 +236,37 @@ class Repositorio(context: Context) {
         }
     }
 
+    suspend fun conectarSiHaceFalta(): Boolean {
+        val prefs = ajustes.leer()
+        if (prefs.manual) return prefs.activa.url.isNotBlank() && prefs.activa.token.isNotBlank()
+        if (conectarPorDescubrimiento()) return true
+        val activa = ajustes.actual()
+        return activa.url.isNotBlank() && activa.token.isNotBlank()
+    }
+
+    private suspend fun conectarPorDescubrimiento(): Boolean {
+        val avisos = try {
+            cliente.avisosDescubrimiento()
+        } catch (_: Exception) {
+            return false
+        }
+        val ahora = System.currentTimeMillis() / 1000.0
+        val frescos = avisos.filter { ahora - it.en < 12 * 3600 }
+        val porBackend = frescos.groupBy { it.backend }.mapValues { (_, lista) -> lista.maxBy { it.en } }
+        for (backend in listOf("kaggle", "colab")) {
+            val aviso = porBackend[backend] ?: continue
+            try {
+                cliente.saludEn(aviso.url, aviso.token)
+                ajustes.elegir(backend)
+                ajustes.guardarEn(backend, aviso.url, aviso.token, dev.jongamer.bastionalbor.logica.Descubrimiento.TOPIC)
+                return true
+            } catch (_: Exception) {
+                continue
+            }
+        }
+        return false
+    }
+
     suspend fun prepararDemo(modo: String) {
         demoModo = modo
         ajustes.guardar("https://demo.trycloudflare.com", "demo-token", "bastion-demo")

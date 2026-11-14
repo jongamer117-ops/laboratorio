@@ -34,9 +34,7 @@ En la app, Ajustes:
 - pegar la URL y el token a mano, o
 - escribir el tema ntfy y tocar **Buscar en ntfy**.
 
-Elige **Colab** o **Kaggle** arriba. Cada uno guarda su URL, su token y su tema. El estado dice cuál está en línea y cuántas GPU ve.
-
-Luego **Probar conexión**. Si responde con el nombre de la GPU, ya puedes generar.
+No hace falta escanear el QR. Los dos notebooks publican la URL cifrada en un canal fijo de ntfy y la app la toma sola al abrirse y antes de cada pedido. Si Kaggle y Colab están vivos, usa Kaggle. Si todavía no hay notebook, verás «Esperando al notebook…». La URL y el token a mano quedan en Ajustes → Avanzado.
 
 La primera imagen o el primer relato tardan más: el modelo se carga en la GPU. Después, dentro de la misma sesión, va más rápido. Si cambias de imagen a texto (o al revés), el servidor suelta el modelo anterior para no quedarse sin memoria.
 
@@ -144,7 +142,9 @@ Cada sesión fría baja varios gigas y puede tardar muchos minutos. Con `USAR_GO
 
 El workflow `.github/workflows/colab-studio-apk.yml` corre en cada push y en cada pull request que toque `colab-studio/`, y también a mano. Compila el APK y lo deja como artefacto del run.
 
-**Publica un Release solo cuando etiquetas `v*`** (por ejemplo `v0.1.0`). La app compara `versionName` con esa etiqueta.
+**Publica un Release solo cuando etiquetas `v*`** (por ejemplo `v0.1.1`). La app compara `versionName` con esa etiqueta.
+
+Cada imagen sale dos veces si `rembg` puede quitar el fondo: un PNG transparente y otro con fondo negro. Va activado por defecto. En Generar imagen solo se ven el prompt, los pasos, la guía, la cantidad y la semilla. El estilo anime o realista se elige en Ajustes. El servidor antepone etiquetas de calidad y el negativo de menores, y usa Euler a con Illustrious.
 
 Secretos del repositorio (Settings → Secrets and variables → Actions), los cuatro:
 

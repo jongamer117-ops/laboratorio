@@ -65,4 +65,4 @@ Pasos cortos (el detalle, los límites y los secretos de firma están en [`colab
 
 1. Baja el APK desde [Releases](https://github.com/jongamer117-ops/laboratorio/releases) e instálalo.
 2. Abre `colab-studio/server/Servidor_Colab.ipynb` en Colab (T4) o `Servidor_Kaggle.ipynb` en Kaggle (T4 x2, Internet On, teléfono verificado) y ejecuta todo.
-3. En la app elige Colab o Kaggle, escanea el QR y genera.
+3. Abre la app. Encuentra el notebook sola (si los dos están vivos, usa Kaggle). Escribe el prompt y genera.

@@ -143,6 +143,9 @@ paquetes = [
     "qrcode[pil]",
     "flask>=3.0",
     "pillow",
+    "cryptography",
+    "rembg",
+    "onnxruntime",
 ]
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *paquetes])
 print("Paquetes listos. Torch se deja como viene en la imagen de Kaggle.")
@@ -162,6 +165,9 @@ paquetes = [
     "qrcode[pil]",
     "flask>=3.0",
     "pillow",
+    "cryptography",
+    "rembg",
+    "onnxruntime",
 ]
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *paquetes])
 print("Paquetes listos. Torch se deja como viene en Colab para no romper CUDA.")

@@ -18,6 +18,8 @@ data class Preferencias(
     val servidor: String = "colab",
     val colab: Conexion = Conexion(),
     val kaggle: Conexion = Conexion(),
+    val manual: Boolean = false,
+    val modeloImagen: String = "ilustrious",
 ) {
     val activa: Conexion
         get() = if (servidor == "kaggle") kaggle else colab
@@ -36,6 +38,8 @@ class AjustesStore(private val context: Context) {
     private val legadoUrl = stringPreferencesKey("url")
     private val legadoToken = stringPreferencesKey("token")
     private val legadoTema = stringPreferencesKey("tema")
+    private val claveManual = stringPreferencesKey("manual")
+    private val claveModelo = stringPreferencesKey("modelo_imagen")
 
     val preferencias: Flow<Preferencias> = context.ajustesDataStore.data.map { prefs ->
         val colab = Conexion(
@@ -52,6 +56,8 @@ class AjustesStore(private val context: Context) {
             servidor = if (prefs[claveServidor] == "kaggle") "kaggle" else "colab",
             colab = colab,
             kaggle = kaggle,
+            manual = prefs[claveManual] == "1",
+            modeloImagen = if (prefs[claveModelo] == "flux") "flux" else "ilustrious",
         )
     }
 
@@ -82,6 +88,18 @@ class AjustesStore(private val context: Context) {
                 prefs[legadoToken] = limpioToken
                 prefs[legadoTema] = limpioTema
             }
+        }
+    }
+
+    suspend fun fijarManual(activo: Boolean) {
+        context.ajustesDataStore.edit { prefs ->
+            prefs[claveManual] = if (activo) "1" else "0"
+        }
+    }
+
+    suspend fun fijarModeloImagen(modelo: String) {
+        context.ajustesDataStore.edit { prefs ->
+            prefs[claveModelo] = if (modelo == "flux") "flux" else "ilustrious"
         }
     }
 

@@ -46,25 +46,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import dev.jongamer.bastionalbor.logica.NEGATIVO_FORZADO
-import dev.jongamer.bastionalbor.logica.PRESET_AIGIS
-import dev.jongamer.bastionalbor.logica.nombreModeloImagen
 import dev.jongamer.bastionalbor.tema.colorMarco
-
-private data class Tamano(val etiqueta: String, val ancho: Int, val alto: Int)
-
-private val tamanos = listOf(
-    Tamano("Retrato", 832, 1216),
-    Tamano("Cuadrado", 1024, 1024),
-    Tamano("Paisaje", 1216, 832),
-)
-
-private val marcos = listOf(
-    "plata" to "Plata",
-    "oro" to "Oro",
-    "platino" to "Platino",
-    "negro" to "Negro",
-)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -73,12 +55,8 @@ fun PantallaImagen(
     conectado: Boolean,
     reducir: Boolean,
     snack: SnackbarHostState,
-    modelos: List<String>,
-    onAjustes: () -> Unit,
+    modelo: String,
 ) {
-    LaunchedEffect(modelos) {
-        if (modelos.isNotEmpty() && vm.modeloImagen !in modelos) vm.modeloImagen = modelos.first()
-    }
     val contexto = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val scroll = rememberScrollState()
@@ -95,84 +73,18 @@ fun PantallaImagen(
             modifier = Modifier.semantics { heading() },
         )
         Text(
-            "Illustrious pinta en tu Colab. El retrato se guarda solo en Fotos.",
+            "Se guarda solo en Fotos. El fondo se quita en el servidor.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (!conectado) {
-            BannerAviso(
-                texto = "No hay servidor. Ejecuta el notebook y trae el QR o el tema ntfy.",
-                accion = "Conectar",
-                onAccion = onAjustes,
-            )
-        }
-        MarcoOrnado(color = MaterialTheme.colorScheme.primary) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Campo(vm.prompt, { vm.prompt = it }, "Prompt", minLineas = 4)
-                Text(
-                    "El modelo entiende mejor etiquetas en inglés.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ChipBastion(
-                        seleccionado = vm.prompt == PRESET_AIGIS,
-                        onClick = { vm.prompt = PRESET_AIGIS },
-                        texto = "Full-art estilo Aigis, fondo negro",
-                    )
-                }
-            }
-        }
-        MarcoOrnado(color = MaterialTheme.colorScheme.outline) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Campo(vm.negativo, { vm.negativo = it }, "Negativo", minLineas = 2)
-                Text(
-                    "Siempre se agregan y no se pueden quitar: $NEGATIVO_FORZADO.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        Text("Modelo", style = MaterialTheme.typography.titleSmall)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            modelos.forEach { id ->
-                ChipBastion(
-                    seleccionado = vm.modeloImagen == id,
-                    onClick = { vm.modeloImagen = id },
-                    texto = nombreModeloImagen(id),
-                )
-            }
-        }
-        if (vm.modeloImagen == "flux") {
             Text(
-                "Flux pinta en 4 pasos con guía 0. Puedes escribir una frase. El bloqueo de menores sigue rechazando el prompt.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "Esperando al notebook… Ábrelo en Colab o Kaggle y deja la celda corriendo.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.primary,
             )
         }
-        Text("Tamaño", style = MaterialTheme.typography.titleSmall)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            tamanos.forEach { tamano ->
-                ChipBastion(
-                    seleccionado = vm.ancho == tamano.ancho && vm.alto == tamano.alto,
-                    onClick = {
-                        vm.ancho = tamano.ancho
-                        vm.alto = tamano.alto
-                    },
-                    texto = "${tamano.etiqueta} ${tamano.ancho}×${tamano.alto}",
-                )
-            }
-        }
-        Text("Marco", style = MaterialTheme.typography.titleSmall)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            marcos.forEach { (id, nombre) ->
-                ChipBastion(
-                    seleccionado = vm.marco == id,
-                    onClick = { vm.marco = id },
-                    texto = nombre,
-                )
-            }
-        }
+        Campo(vm.prompt, { vm.prompt = it }, "Prompt", minLineas = 4)
         Text("Pasos ${vm.pasos.toInt()}", style = MaterialTheme.typography.titleSmall)
         Slider(value = vm.pasos, onValueChange = { vm.pasos = it }, valueRange = 10f..40f, steps = 29, colors = coloresSlider())
         Text("Guía ${"%.1f".format(vm.guia)}", style = MaterialTheme.typography.titleSmall)
@@ -203,7 +115,7 @@ fun PantallaImagen(
             enabled = !vm.generando && vm.prompt.isNotBlank(),
             onClick = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                vm.generar()
+                vm.generar(modelo)
             },
         )
         when {

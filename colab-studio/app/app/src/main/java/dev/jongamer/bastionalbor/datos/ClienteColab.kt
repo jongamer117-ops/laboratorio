@@ -7,8 +7,16 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import dev.jongamer.bastionalbor.logica.Descubrimiento
 import org.json.JSONObject
 import java.io.IOException
+
+data class AvisoCanal(
+    val url: String,
+    val token: String,
+    val backend: String,
+    val en: Double,
+)
 
 class ClienteColab(
     private val http: OkHttpClient,
@@ -16,10 +24,50 @@ class ClienteColab(
 ) {
     suspend fun salud(): JSONObject {
         val (base, token) = credenciales()
+        return saludEn(base, token)
+    }
+
+    suspend fun saludEn(url: String, token: String): JSONObject {
+        val base = normalizar(url)
         val (codigo, cuerpo) = pedir("$base/api/salud", token, null)
         if (codigo == 401) throw ErrorEstudio.Token()
         if (codigo !in 200..299) throw ErrorEstudio.Apagado()
         return JSONObject(cuerpo)
+    }
+
+    suspend fun avisosDescubrimiento(): List<AvisoCanal> = withContext(Dispatchers.IO) {
+        val destino = "https://ntfy.sh/${Descubrimiento.TOPIC}/json?poll=1&since=12h"
+        val request = Request.Builder().url(destino).header("User-Agent", "BastionAlbor").build()
+        val texto = http.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("ntfy respondió ${resp.code}")
+            resp.body?.string().orEmpty()
+        }
+        val avisos = mutableListOf<AvisoCanal>()
+        texto.lineSequence().map { it.trim() }.filter { it.startsWith("{") }.forEach { linea ->
+            val evento = try {
+                JSONObject(linea)
+            } catch (_: Exception) {
+                return@forEach
+            }
+            val mensaje = evento.optString("message")
+            if (mensaje.isBlank()) return@forEach
+            val datos = try {
+                Descubrimiento.descifrar(mensaje)
+            } catch (_: Exception) {
+                return@forEach
+            }
+            val url = datos.optString("u")
+            val token = datos.optString("t")
+            if (url.startsWith("http") && token.isNotBlank()) {
+                avisos += AvisoCanal(
+                    url = url,
+                    token = token,
+                    backend = if (datos.optString("b") == "kaggle") "kaggle" else "colab",
+                    en = datos.optDouble("en", 0.0),
+                )
+            }
+        }
+        avisos
     }
 
     suspend fun descubrir(tema: String): Conexion? = withContext(Dispatchers.IO) {
@@ -95,10 +143,16 @@ class ClienteColab(
         if (conexion.url.isBlank() || conexion.token.isBlank()) throw ErrorEstudio.SinConexion()
         var base = conexion.url.trim().trimEnd('/')
         if (base.endsWith("/api")) base = base.removeSuffix("/api")
+        return normalizar(base) to conexion.token
+    }
+
+    private fun normalizar(url: String): String {
+        var base = url.trim().trimEnd('/')
+        if (base.endsWith("/api")) base = base.removeSuffix("/api")
         if (!base.startsWith("http://") && !base.startsWith("https://")) {
             throw ErrorEstudio.Servidor("La URL tiene que empezar con http:// o https://.")
         }
-        return base to conexion.token
+        return base
     }
 
     private suspend fun pedir(url: String, token: String, cuerpo: JSONObject?): Pair<Int, String> =

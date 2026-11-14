@@ -172,7 +172,13 @@ fun AppBastion(repo: Repositorio) {
                 ) {
                     composable("imagen") {
                         val vm: ImagenViewModel = viewModel(factory = ImagenViewModel.fabrica(repo))
-                        PantallaImagen(vm, ajustes.guardada.url.isNotBlank(), reducir, snack, ajustes.modelosImagen) { ir("ajustes") }
+                        PantallaImagen(
+                            vm,
+                            ajustes.guardada.url.isNotBlank() && ajustes.enLinea == true,
+                            reducir,
+                            snack,
+                            ajustes.modeloImagen,
+                        )
                     }
                     composable("historias") {
                         val vm: HistoriasViewModel = viewModel(factory = HistoriasViewModel.fabrica(repo))

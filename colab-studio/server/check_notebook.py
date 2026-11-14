@@ -73,6 +73,10 @@ def main() -> int:
         "safety_checker",
         "NEGATIVO_FORZADO",
         "ntfy.sh",
+        "DISCOVERY_TOPIC",
+        "EulerAncestralDiscreteScheduler",
+        "quitar_fondo",
+        "rembg",
     )
     if _validar(AQUI / "Servidor_Colab.ipynb", servidor, comunes + ("google.colab", "BASTION_BACKEND")):
         return 1

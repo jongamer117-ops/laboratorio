@@ -6,6 +6,15 @@ import unittest
 import bastion_server as srv
 
 
+class DescubrimientoTests(unittest.TestCase):
+    def test_el_mensaje_viaja_cifrado(self):
+        claro = {"u": "https://x.trycloudflare.com", "t": "secreto", "b": "kaggle", "en": 1}
+        mensaje = srv.cifrar_descubrimiento(claro)
+        self.assertNotIn("secreto", mensaje)
+        self.assertEqual(srv.descifrar_descubrimiento(mensaje)["t"], "secreto")
+        self.assertEqual(srv.descifrar_descubrimiento(mensaje)["b"], "kaggle")
+
+
 class TroceoTests(unittest.TestCase):
     def test_trozos_de_75_con_bos_eos(self):
         ids = list(range(80))
@@ -140,7 +149,12 @@ class ApiTests(unittest.TestCase):
         cuerpo = resultado.get_json()
         self.assertEqual(cuerpo["imagenes"][0]["semilla"], 7)
         self.assertIn("underage", cuerpo["negativo_usado"])
-        self.assertEqual(self.estado.trabajos[id_trabajo].payload["modelo"], "ilustrious")
+        trabajo = self.estado.trabajos[id_trabajo].payload
+        self.assertEqual(trabajo["modelo"], "ilustrious")
+        self.assertTrue(trabajo["prompt"].startswith("masterpiece, best quality, "))
+        self.assertTrue(trabajo["quitar_fondo"])
+        self.assertEqual(trabajo["pasos"], 10)
+        self.assertEqual(trabajo["ancho"], 832)
 
     def test_trabajo_de_relato_abliterado_por_defecto(self):
         resp = self.cliente.post(
