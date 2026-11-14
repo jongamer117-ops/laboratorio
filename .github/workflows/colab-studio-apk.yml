@@ -25,7 +25,7 @@ jobs:
       - name: Probar el servidor sin GPU
         working-directory: colab-studio/server
         run: |
-          pip install flask
+          pip install flask cryptography
           python -m unittest test_bastion_server.py
           python check_notebook.py
 
