@@ -372,7 +372,7 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
     var sistema by mutableStateOfSafe(SISTEMA_DEFAULT)
     var pedido by mutableStateOfSafe("")
     var largo by mutableStateOfSafe(700f)
-    var creatividad by mutableStateOfSafe(0.7f)
+    var creatividad by mutableStateOfSafe(0.9f)
     var modelo by mutableStateOfSafe("7b")
     var generando by mutableStateOfSafe(false)
     var avance by mutableStateOfSafe(0f)

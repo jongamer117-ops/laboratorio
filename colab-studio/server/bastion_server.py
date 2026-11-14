@@ -44,7 +44,11 @@ DISCOVERY_KEY_B64 = "RTMuKJDbQrFucahtdaTVNo+7w+kS6UrYahOb6tzIs78="
 DISCOVERY_AAD = b"bastion-albor"
 PREFIJO_ANIME = "masterpiece, best quality, amazing quality, newest, "
 SUFIJO_ANIME = "highres, absurdres"
-NEGATIVO_ESTILO = "shiny, glossy, latex, plastic, specular highlight, oversaturated, high contrast"
+NEGATIVO_ESTILO = (
+    "shiny, glossy, latex, plastic, specular highlight, oversaturated, high contrast, "
+    "extra fingers, missing fingers, fused fingers, poorly drawn hands, extra arms"
+)
+ESTILO_FLUX = "natural matte skin texture, visible pores, subtle film grain"
 
 # Términos que siempre se añaden al negativo de imagen. No se pueden quitar.
 NEGATIVO_FORZADO = "child, loli, shota, young, underage, nude"
@@ -439,6 +443,10 @@ class GestorModelos:
             # Una T4: sin offload a CPU, porque la RAM del sistema no alcanza.
             kwargs["device_map"] = {"": 0}
         modelo = AutoModelForCausalLM.from_pretrained(repo, **kwargs)
+        # Pesos en NF4. La caché KV de Qwen2.5 se queda en fp16: sin HQQ ni quanto.
+        modelo.config.use_cache = True
+        if getattr(modelo, "generation_config", None) is not None:
+            modelo.generation_config.cache_implementation = "dynamic"
         self.tokenizer = tok
         self.modelo_texto = modelo
         self.id_texto = repo
@@ -592,7 +600,9 @@ def _semilla_de(payload: dict, indice: int) -> int:
 def prompt_con_calidad(prompt: str, modelo: str) -> str:
     texto = (prompt or "").strip().strip(",")
     if modelo == "flux":
-        # Schnell va en lenguaje natural. No se anteponen etiquetas de anime.
+        # Schnell va en lenguaje natural, con textura de piel. Sin «no plastic» ni 8k.
+        if "visible pores" not in texto.lower():
+            texto = texto.rstrip(", ") + ", " + ESTILO_FLUX
         return texto
     bajo = texto.lower()
     prefijo = PREFIJO_ANIME.strip()
@@ -731,7 +741,9 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
 
 
 TOKENS_CAPITULO = 3200
-MUESTREO_CAPITULO = {"top_p": 0.8, "top_k": 20, "min_p": 0.05, "repetition_penalty": 1.05}
+# Escritura larga (EVA-Qwen2.5 / Evathene): min_p corta la cola y top_k queda apagado.
+MUESTREO_CAPITULO = {"top_p": 1.0, "top_k": 0, "min_p": 0.05, "repetition_penalty": 1.03}
+MUESTREO_RESUMEN = {"top_p": 1.0, "top_k": 0, "min_p": 0.05, "repetition_penalty": 1.03}
 
 
 def termina_frase(texto: str) -> bool:
@@ -877,7 +889,7 @@ def generar_novela_real(payload: dict, reportar: Callable[[float, str], None], g
             f"Final del capítulo anterior:\n{cola[-1800:] or '(es el primer capítulo)'}\n\n"
             f"Escribe el capítulo {numero}."
         )
-        creatividad = float(payload.get("creatividad") or 0.7)
+        creatividad = float(payload.get("creatividad") or 0.9)
         texto = _completar(gestor, sistema_cap, pedido, TOKENS_CAPITULO, creatividad, MUESTREO_CAPITULO)
         if not termina_frase(texto):
             reportar(base + 0.4, f"Capítulo {numero} · cerrando la frase")
@@ -900,6 +912,7 @@ def generar_novela_real(payload: dict, reportar: Callable[[float, str], None], g
             texto,
             420,
             0.3,
+            MUESTREO_RESUMEN,
         )
         reportar(base + 0.8, f"Capítulo {numero} · actualizando la biblia")
         estado = _completar(
@@ -910,6 +923,7 @@ def generar_novela_real(payload: dict, reportar: Callable[[float, str], None], g
             f"Biblia actual:\n{biblia[:8000]}\n\nResumen del capítulo {numero}:\n{resumen}",
             500,
             0.3,
+            MUESTREO_RESUMEN,
         )
         biblia = actualizar_seccion_estado(biblia, estado)
         resumenes.append({"n": numero, "texto": resumen})
@@ -1121,7 +1135,7 @@ class Estado:
             "cola": (data.get("cola") or "")[-2000:],
             "siguiente": _entero(data.get("siguiente"), 0, 0, 999, "Capítulo"),
             "cantidad": _entero(data.get("cantidad"), 1, 1, 10, "Capítulos"),
-            "creatividad": _flotante(data.get("creatividad"), 0.7, 0.05, 1.5, "Creatividad"),
+            "creatividad": _flotante(data.get("creatividad"), 0.9, 0.05, 1.5, "Creatividad"),
             "modelo": modelo,
         }
 
