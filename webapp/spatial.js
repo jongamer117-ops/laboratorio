@@ -2,7 +2,7 @@
  * spatial.js — capa espacial mínima (laboratorio).
  * Pura + determinista: f(seed, zoneId, era, archId).
  * NO escribe el World. Solo propone POIs y resuelve intenciones de lugar.
- * D1/D2/D3: el motor sigue aplicando vía choiceLog; esto es query + resolución de texto.
+ * D1/D2/D3: viajar, entrar y el texto libre entran por Engine.applyAction.
  */
 (function () {
   if (typeof Engine === "undefined") {
@@ -213,36 +213,105 @@
     return _query(worldState, lens);
   };
 
-  const _dispatch = Engine._dispatchAction.bind(Engine);
-  Engine._dispatchAction = function (worldState, action) {
-    if (action && action.type === "travel") {
-      const agent = worldState.agents && worldState.agents[0];
-      if (!agent || !action.zoneId) return { logs: [] };
-      const u = worldState.universe;
-      const dest = u && u.zones && u.zones.find((z) => z.id === action.zoneId);
-      if (!dest) return { logs: [{ text: "No hay camino hacia ese territorio.", kind: "system" }] };
-      const from = agent.zoneId;
-      agent.zoneId = dest.id;
-      worldState.choiceLog = worldState.choiceLog || [];
-      worldState.choiceLog.push({
-        tick: worldState.tick,
-        choice: "travel",
-        from: from,
-        to: dest.id,
-        dir: action.dir || null,
-        text: action.text || null
-      });
-      if (typeof this.materializeZone === "function") {
-        this.materializeZone(worldState, dest.id, 2);
+  // Artículo solo al inicio. "el Mercado de la Esquina" conserva el "la" interior.
+  Engine.stripLeadingArticle = function (name) {
+    return String(name || "").replace(/^(?:el|la|los|las)\s+/i, "");
+  };
+
+  // Hace falta un verbo de movimiento Y una dirección. "este" suelto ("quiero este cuchillo")
+  // no es viajar. "adelante"/"atrás"/"arriba" tampoco, salvo con verbo.
+  Engine.MOVE_VERB_RE = /\b(ir|voy|vamos|camina(?:r)?|dir[ií]gete|dirigirme|marcha(?:r)?|viaja(?:r)?|avanza(?:r)?|mu[eé]vete|mover(?:me)?|anda(?:r)?|encamina(?:r)?|cruza(?:r)?|sal(?:ir)?|rumbo)\b/i;
+  Engine.TRAVEL_VERB_RE = /\b(viaja(?:r)?|marcha(?:r)?|sal(?:ir)?|cruza(?:r)?|rumbo)\b/i;
+  Engine.DIR_WORD_RE = {
+    norte: /\b(norte|adelante|arriba)\b/i,
+    sur: /\b(sur|atr[aá]s|abajo)\b/i,
+    este: /\b(este|derecha)\b/i,
+    oeste: /\b(oeste|izquierda)\b/i
+  };
+  Engine.POI_TYPE_RE = {
+    food: /restaurante|taberna|comedor|posada|inn|cafeter[ií]a|bar\b|cantina|fideos|noodles|comer|comida|cocina|olla|raciones/i,
+    shop: /tienda|bazar|armer[ií]a|comprar|vender|chips?|implantes?|m[oó]dulos?/i,
+    forge: /forja|taller|herrer[ií]a|reparaci[oó]n/i,
+    temple: /templo|santuario|iglesia|capilla|pabell[oó]n de meditaci[oó]n|meditar/i,
+    market: /mercado|plaza|trueque/i,
+    gate: /puerta|muralla|salida|acceso|checkpoint|esclusa|barricada|paso\b/i,
+    barracks: /cuartel|comisaría|comisaria|guardia|entrenamiento|vigilancia|campamento armado/i
+  };
+
+  /**
+   * Pura: no escribe el World. Devuelve null si el texto no es una intención de lugar.
+   * { ok, kind: 'poi'|'travel'|'dir', poi?, zone?, dir?, reason? }
+   */
+  Engine.resolveSpatialIntent = function (worldState, text) {
+    const t = String(text || "").trim();
+    if (!t || !worldState) return null;
+    const spatial = this.query(worldState, "spatial") || {};
+    const pois = spatial.pois || [];
+    const neighbors = spatial.neighbors || {};
+    const low = t.toLowerCase();
+    const looking = /buscar|encontrar|localizar|entrar|voy\s+a|vamos\s+a|hacia/i.test(t);
+
+    for (let i = 0; i < pois.length; i++) {
+      const p = pois[i];
+      const pn = String(p.name || "").toLowerCase();
+      if (!pn) continue;
+      const short = this.stripLeadingArticle(pn);
+      const hitFull = low.indexOf(pn) !== -1;
+      const dirWord = /^(norte|sur|este|oeste|adelante|atr[aá]s|arriba|abajo|derecha|izquierda)$/i.test(short);
+      const hitShort = !dirWord && short.length >= 6 && short !== pn && low.indexOf(short) !== -1;
+      if (hitFull || hitShort) {
+        return {
+          ok: true,
+          kind: "poi",
+          poi: p,
+          action: "entrar en " + p.name
+        };
+      }
+    }
+
+    const typeKeys = Object.keys(this.POI_TYPE_RE);
+    if (looking || typeKeys.some((k) => this.POI_TYPE_RE[k].test(t))) {
+      for (let i = 0; i < typeKeys.length; i++) {
+        const type = typeKeys[i];
+        if (!this.POI_TYPE_RE[type].test(t)) continue;
+        const found = pois.filter((p) => p.type === type);
+        if (found.length) {
+          return { ok: true, kind: "poi", poi: found[0], action: "buscar y entrar en " + found[0].name };
+        }
+        const lista = pois.length ? pois.map((p) => p.name).join(", ") : "ningún lugar destacado";
+        return {
+          ok: false,
+          kind: "poi",
+          reason: "En esta zona no hay ningún lugar de ese tipo. Aquí solo hay: " + lista + "."
+        };
+      }
+    }
+
+    if (!this.MOVE_VERB_RE.test(t)) return null;
+
+    const dirs = Object.keys(this.DIR_WORD_RE);
+    for (let i = 0; i < dirs.length; i++) {
+      const dir = dirs[i];
+      if (!this.DIR_WORD_RE[dir].test(t)) continue;
+      const travelVerb = this.TRAVEL_VERB_RE.test(t);
+      if (!travelVerb) {
+        const inDir = pois.filter((p) => p.dir === dir);
+        if (inDir.length) {
+          return { ok: true, kind: "poi", poi: inDir[0], action: "ir hacia el " + dir + " hasta " + inDir[0].name };
+        }
+      }
+      const neigh = neighbors[dir];
+      if (neigh) {
+        return { ok: true, kind: "travel", zone: neigh, dir: dir, action: "viajar al " + dir + " hacia " + neigh.name };
       }
       return {
-        logs: [{
-          text: "Dejas " + (this.zoneName ? this.zoneName(u, from) : from) + " y marchas hacia " + dest.name + ".",
-          kind: "exploration"
-        }]
+        ok: false,
+        kind: "dir",
+        dir: dir,
+        reason: "Hacia el " + dir + " no hay un camino claro ni un lugar conocido desde aquí."
       };
     }
-    return _dispatch(worldState, action);
+    return null;
   };
 
 })();

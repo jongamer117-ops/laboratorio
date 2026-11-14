@@ -5,10 +5,22 @@
 const Ollama = {
   baseUrl: 'http://127.0.0.1:11434',
   model: 'llama3.2:1b',
+  tagsTimeoutMs: 4000,
+  chatTimeoutMs: 45000,
+
+  async _fetch(url, opts, ms) {
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+    try {
+      return await fetch(url, Object.assign({}, opts || {}, ctrl ? { signal: ctrl.signal } : {}));
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  },
 
   async isAlive() {
     try {
-      const r = await fetch(this.baseUrl + '/api/tags', { method: 'GET' });
+      const r = await this._fetch(this.baseUrl + '/api/tags', { method: 'GET' }, this.tagsTimeoutMs);
       return r.ok;
     } catch (_) {
       return false;
@@ -16,7 +28,7 @@ const Ollama = {
   },
 
   async listModels() {
-    const r = await fetch(this.baseUrl + '/api/tags');
+    const r = await this._fetch(this.baseUrl + '/api/tags', { method: 'GET' }, this.tagsTimeoutMs);
     if (!r.ok) throw new Error('Ollama no responde');
     const data = await r.json();
     return (data.models || []).map(m => m.name);
@@ -36,11 +48,11 @@ const Ollama = {
         { role: 'user', content: user }
       ]
     };
-    const r = await fetch(this.baseUrl + '/api/chat', {
+    const r = await this._fetch(this.baseUrl + '/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
-    });
+    }, this.chatTimeoutMs);
     if (!r.ok) throw new Error('Ollama error: ' + (await r.text()));
     const data = await r.json();
     return ((data.message && data.message.content) || data.response || '').trim();
@@ -153,12 +165,16 @@ const Ollama = {
     const system = [
       'Eres el Director narrativo de un simulador determinista (estilo xianxia / life-sim).',
       'TÚ SOLO PROPONES. Responde en español, 2-4 oraciones, tono de crónica.',
-      'No inventes stats numéricos. Solo narra la consecuencia de la acción.'
+      'No inventes stats numéricos. Solo narra la consecuencia de la acción.',
+      'Si nombras un lugar, tiene que estar en la lista de lugares reales. No inventes sitios.'
     ].join(' ');
 
+    const poiLines = (ctx.pois || []).map(p => `${p.name} (${p.type}, ${p.dir})`).join('; ') || 'ninguno listado';
     const user = [
       `Era: ${ctx.era || '?'} | Año: ${ctx.year || 0} | Host: ${ctx.hostName || '?'}`,
       `Facción: ${ctx.faction || '—'} | Némesis: ${ctx.nemesis || '—'}`,
+      `Zona: ${ctx.zoneName || '—'}`,
+      `Lugares reales de esta zona (no inventes otros): ${poiLines}`,
       `Últimos eventos:\n${(ctx.recentLogs || []).slice(-6).join('\n')}`,
       `Acción: "${ctx.playerText}"`,
       'Narra la consecuencia inmediata.'
