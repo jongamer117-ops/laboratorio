@@ -3001,6 +3001,65 @@ const Engine = {
         }
     },
 
+    // APERTURA FIJA (f(semilla), no es una elección): avanza hasta el año 1 — afiliación, zona
+    // detallada — y se detiene. No quema años de vida antes de que el espectador actúe.
+    // Cada log sale con `year` para que la capa 3 agrupe sin adivinar.
+    openLife: function(worldState) {
+        const logs = [];
+        let guard = 0;
+        while (guard++ < 48) {
+            if (!worldState || !worldState.agents || !worldState.agents[0]) break;
+            if (worldState.waitingForDecision || worldState.waitingForChoice) break;
+            if (Math.floor((worldState.tick || 0) / 360) >= 1) break;
+            const res = this.step(worldState);
+            const year = Math.floor((worldState.tick || 0) / 360);
+            (res.logs || []).forEach(l => logs.push({ text: l.text, kind: l.kind, color: l.color, year: year }));
+            if (res.stopped) break;
+        }
+        return { logs: logs };
+    },
+
+    // Reconstruye la acción de espectador a partir de una entrada de choiceLog (D3).
+    // La narración del LLM no vive en el log: no es estado.
+    actionFromChoice: function(entry) {
+        if (!entry || entry.choice === "start") return null;
+        if (entry.choice === "free_text") return { type: "free_text", text: entry.text };
+        if (entry.choice === "enter_poi") {
+            return { type: "enter_poi", text: entry.text, poiId: entry.poiId, poiType: entry.poiType, poiName: entry.poiName };
+        }
+        if (entry.choice === "travel") return { type: "travel", zoneId: entry.to, dir: entry.dir, text: entry.text };
+        if (entry.choice === "advance_year") return { type: "advance_year" };
+        if (entry.choice === "abort") return { type: "abort" };
+        let optionId = String(entry.choice || "");
+        if (optionId.indexOf("inflexion_") === 0) optionId = optionId.slice("inflexion_".length);
+        return { type: "decision", optionId: optionId };
+    },
+
+    // Mundo = f(semilla, choiceLog). Misma semilla y el mismo log producen el mismo World.
+    // La apertura (año 1) es fija; el resto se re-aplica en orden por la puerta única.
+    replay: function(seed, choiceLog) {
+        const world = this.boot(seed);
+        const log = choiceLog || [];
+        let start = null;
+        for (let i = 0; i < log.length; i++) {
+            if (log[i] && log[i].choice === "start") { start = log[i]; break; }
+        }
+        const host = this.generateHost(seed, world.meta.era, world.universe);
+        this.applyAction(world, {
+            type: "start",
+            baseAgent: host,
+            cards: (start && start.cards) || [],
+            decrees: (start && start.decrees) || [],
+            keptInnate: (start && start.keptInnate) || null
+        });
+        this.openLife(world);
+        for (let i = 0; i < log.length; i++) {
+            const action = this.actionFromChoice(log[i]);
+            if (action) this.applyAction(world, action);
+        }
+        return world;
+    },
+
     // PUERTA ÚNICA de la capa 2 (Invariante D1 del doc maestro): TODA acción del espectador con
     // efecto sobre el World entra por acá. Antes mutaba al toque; ahora se ENCOLA primero
     // (worldState.eventQueue, FIFO) y se drena en el mismo paso — EventBus formal (cierra la deuda
@@ -3091,6 +3150,101 @@ const Engine = {
                 if (pd && pd.type === "duel") return this.resolveDuelDecision(worldState, action.optionId);
                 if (pd && pd.type === "inflexion") return this.resolveInflexion(worldState, action.optionId);
                 return this.resolveDecision(worldState, action.optionId);
+            }
+            // TEXTO LIBRE: la entrada del espectador queda en choiceLog (D3). La prosa del LLM
+            // no entra: no es determinista y no es estado del World.
+            case "free_text": {
+                const agent = worldState.agents && worldState.agents[0];
+                if (!agent || agent.hp <= 0 || worldState.waitingForDecision || worldState.waitingForChoice) {
+                    return { logs: [], refused: true };
+                }
+                const text = String(action.text || "").trim();
+                if (!text) return { logs: [], refused: true };
+                worldState.choiceLog = worldState.choiceLog || [];
+                worldState.choiceLog.push({ tick: worldState.tick, choice: "free_text", text: text });
+                return { logs: [] };
+            }
+            // ENTRAR A UN LUGAR real de la zona (POI derivado de la semilla). Solo anota el lugar;
+            // no guarda narración.
+            case "enter_poi": {
+                const agent = worldState.agents && worldState.agents[0];
+                if (!agent || agent.hp <= 0 || worldState.waitingForDecision || worldState.waitingForChoice) {
+                    return { logs: [], refused: true };
+                }
+                const poiId = action.poiId ? String(action.poiId) : "";
+                if (!poiId) return { logs: [{ text: "Ese lugar no está en esta zona.", kind: "system" }], refused: true };
+                const poiName = action.poiName ? String(action.poiName) : "el lugar";
+                worldState.choiceLog = worldState.choiceLog || [];
+                worldState.choiceLog.push({
+                    tick: worldState.tick,
+                    choice: "enter_poi",
+                    text: String(action.text || "").trim(),
+                    poiId: poiId,
+                    poiType: action.poiType ? String(action.poiType) : null,
+                    poiName: poiName
+                });
+                agent.visitedPois = agent.visitedPois || [];
+                if (agent.visitedPois.indexOf(poiId) === -1) agent.visitedPois.push(poiId);
+                return { logs: [{ text: "[LUGAR] " + agent.name + " cruza el umbral de " + poiName + ".", kind: "exploration", year: Math.floor(worldState.tick / 360) }] };
+            }
+            // TRAVESÍA del espectador. Mismas reglas que la travesía anual del motor: capacidad
+            // (puedeViajar sobre el mazo equipado) y motivo (deriveMotivo). Al irse, la zona de
+            // origen se abstrae (dissolveZone) y el destino se detalla.
+            case "travel": {
+                const agent = worldState.agents && worldState.agents[0];
+                if (!agent || agent.hp <= 0 || worldState.waitingForDecision || worldState.waitingForChoice) {
+                    return { logs: [], refused: true };
+                }
+                const u = worldState.universe;
+                const dest = u && u.zones && u.zones.find(z => z.id === action.zoneId);
+                if (!dest) return { logs: [{ text: "No hay camino hacia ese territorio.", kind: "system" }], refused: true };
+                if (dest.id === agent.zoneId) return { logs: [{ text: "Ya estás en ese territorio.", kind: "system" }], refused: true };
+                const tier = dest.tier || "CIUDAD";
+                const canTravel = this.puedeViajar({ deck: agent.deck, discoveredCards: [] }, tier);
+                const fromName = this.zoneName(u, agent.zoneId);
+                const year = Math.floor(worldState.tick / 360);
+                if (!canTravel) {
+                    return { logs: [{ text: "[TRAVESÍA] " + agent.name + " no tiene montura ni medio para dejar " + fromName + ".", kind: "system", year: year }], refused: true, reason: "capacidad" };
+                }
+                const motivo = this.deriveMotivo(worldState, worldState.meta);
+                if (!motivo) {
+                    return { logs: [{ text: "[TRAVESÍA] " + agent.name + " podría marcharse, pero nada le empuja a dejar " + fromName + ".", kind: "system", year: year }], refused: true, reason: "motivo" };
+                }
+                worldState.choiceLog = worldState.choiceLog || [];
+                worldState.choiceLog.push({
+                    tick: worldState.tick,
+                    choice: "travel",
+                    from: agent.zoneId,
+                    to: dest.id,
+                    dir: action.dir || null,
+                    text: action.text || null
+                });
+                this.dissolveZone(worldState, agent.zoneId);
+                agent.zoneId = dest.id;
+                this.materializeZone(worldState, dest.id, 3);
+                const logs = [{ text: "[TRAVESÍA] Con montura y por " + motivo.reason + ", " + agent.name + " dejó " + fromName + " y puso rumbo a " + dest.name + ".", kind: "travel", year: year }];
+                const zoneLog = this.describeZone(worldState, dest.id);
+                if (zoneLog) logs.push({ text: zoneLog.text, kind: zoneLog.kind, color: zoneLog.color, year: year });
+                return { logs: logs };
+            }
+            // El espectador deja pasar un año (12 ticks). Es una entrada: queda en choiceLog
+            // ANTES de mutar. Si el año se corta en una pausa (bifurcación, juicio, muerte), para.
+            case "advance_year": {
+                const agent = worldState.agents && worldState.agents[0];
+                if (!agent || agent.hp <= 0 || worldState.waitingForDecision || worldState.waitingForChoice) {
+                    return { logs: [], refused: true };
+                }
+                worldState.choiceLog = worldState.choiceLog || [];
+                worldState.choiceLog.push({ tick: worldState.tick, choice: "advance_year" });
+                const logs = [];
+                let stopped = false;
+                for (let i = 0; i < 12; i++) {
+                    const res = this.step(worldState);
+                    const year = Math.floor(worldState.tick / 360);
+                    (res.logs || []).forEach(l => logs.push({ text: l.text, kind: l.kind, color: l.color, year: year }));
+                    if (res.stopped || worldState.waitingForDecision || worldState.waitingForChoice) { stopped = true; break; }
+                }
+                return { logs: logs, stopped: stopped };
             }
             case "abort": {
                 const agent = worldState.agents && worldState.agents[0];
