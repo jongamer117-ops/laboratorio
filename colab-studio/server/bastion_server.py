@@ -1,12 +1,10 @@
-"""Servidor personal de Bastión de Albor para Colab (GPU T4 gratuita).
+"""Servidor personal de Bastión de Albor (Colab con una T4, o Kaggle con dos).
 
-Una sola GPU, poca RAM: nunca hay dos modelos cargados a la vez.
-La API es por trabajos (enviar, consultar, recoger) para que un túnel
-corto no corte una generación larga.
+Nunca hay dos modelos cargados a la vez. La API es por trabajos para que
+un túnel corto no corte una generación larga.
 
-El modelo de texto por defecto es el abliterado. No se añade un filtro
-NSFW encima de Illustrious. El bloqueo de menores sí es fijo: el
-servidor rechaza esos prompts y siempre añade el negativo.
+Texto: solo checkpoints abliterados. Imagen: Illustrious (anime) o Flux
+Schnell (realista). No hay filtro NSFW extra. El bloqueo de menores es fijo.
 """
 
 from __future__ import annotations
@@ -20,6 +18,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import threading
 import time
 import unicodedata
@@ -29,12 +28,15 @@ from typing import Callable, Optional
 
 REPO_IMAGEN = "OnomaAIResearch/Illustrious-xl-early-release-v0"
 ARCHIVO_IMAGEN = "Illustrious-XL-v0.1.safetensors"
-REPO_TEXTO_ABLIT = "huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2"
-REPO_TEXTO_OFICIAL = "Qwen/Qwen2.5-7B-Instruct"
-REPOS_TEXTO = {
-    "abliterado": REPO_TEXTO_ABLIT,
-    "oficial": REPO_TEXTO_OFICIAL,
-}
+REPO_FLUX = "black-forest-labs/FLUX.1-schnell"
+# 7B y 32B de huihui se bajan sin token. El 14B de huihui responde 401
+# anónimo, así que el 14B es el safetensors público más cercano.
+REPO_TEXTO_7B = "huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2"
+REPO_TEXTO_14B = "sci4ai/Qwen2.5-14B-Instruct-Abliterated"
+REPO_TEXTO_32B = "huihui-ai/Qwen2.5-32B-Instruct-abliterated"
+REPO_TEXTO_ABLIT = REPO_TEXTO_7B
+MODELOS_IMAGEN = ("ilustrious", "flux")
+LARGO_TROZO = 75
 
 # Términos que siempre se añaden al negativo de imagen. No se pueden quitar.
 NEGATIVO_FORZADO = "child, loli, shota, young, underage"
@@ -147,6 +149,121 @@ def termino_imagen_bloqueado(prompt: str) -> Optional[str]:
     return _contiene(prompt or "", TERMINOS_IMAGEN)
 
 
+def backend_actual() -> str:
+    valor = (os.environ.get("BASTION_BACKEND") or "colab").strip().lower()
+    return "kaggle" if valor == "kaggle" else "colab"
+
+
+def repos_texto() -> dict[str, str]:
+    if backend_actual() == "kaggle":
+        return {"32b": REPO_TEXTO_32B, "14b": REPO_TEXTO_14B}
+    return {"7b": REPO_TEXTO_7B, "14b": REPO_TEXTO_14B}
+
+
+def defecto_texto() -> str:
+    return "32b" if backend_actual() == "kaggle" else "7b"
+
+
+def cache_defecto() -> str:
+    fijado = (os.environ.get("BASTION_CACHE") or "").strip()
+    if fijado:
+        return fijado
+    if backend_actual() == "kaggle":
+        return "/kaggle/working/BastionAlbor/modelos"
+    return "/content/bastion-modelos"
+
+
+def _token_hf() -> Optional[str]:
+    token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+    return token or None
+
+
+def _mensaje_sin_gpu() -> str:
+    if backend_actual() == "kaggle":
+        return "No hay GPU. En Kaggle: Settings → Accelerator → GPU T4 x2, e Internet On."
+    return "No hay GPU. En Colab: Entorno de ejecución → Cambiar tipo de entorno → T4 GPU."
+
+
+def trocear_ids(ids: list[int], bos: int, eos: int, pad: int, largo: int = LARGO_TROZO) -> list[list[int]]:
+    """Trozo de `largo` tokens de contenido, con BOS y EOS. Cada lista mide largo+2."""
+    grupos = [ids[i : i + largo] for i in range(0, len(ids), largo)] if ids else [[]]
+    trozos = []
+    for grupo in grupos:
+        pieza = list(grupo[:largo])
+        pieza.extend([pad] * (largo - len(pieza)))
+        trozos.append([bos, *pieza, eos])
+    return trozos
+
+
+def igualar_trozos(
+    trozos: list[list[int]],
+    cantidad: int,
+    bos: int,
+    eos: int,
+    pad: int,
+    largo: int = LARGO_TROZO,
+) -> list[list[int]]:
+    vacio = [bos, *([pad] * largo), eos]
+    salida = [list(trozo) for trozo in trozos]
+    while len(salida) < cantidad:
+        salida.append(list(vacio))
+    return salida
+
+
+def _lista_ids(tokenizer, texto: str) -> list[int]:
+    codificados = tokenizer(texto or "", add_special_tokens=False, truncation=False)["input_ids"]
+    if codificados and isinstance(codificados[0], list):
+        return list(codificados[0])
+    return list(codificados)
+
+
+def _preparar_par(tokenizer, positivo: str, negativo: str):
+    bos = tokenizer.bos_token_id
+    eos = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else tokenizer.pad_token_id
+    pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos
+    pos = trocear_ids(_lista_ids(tokenizer, positivo), bos, eos, pad)
+    neg = trocear_ids(_lista_ids(tokenizer, negativo), bos, eos, pad)
+    return pos, neg, bos, eos, pad
+
+
+def _pasar_encoder(encoder, trozos: list[list[int]], querer_pooled: bool = False):
+    import torch
+
+    device = next(encoder.parameters()).device
+    ocultos = []
+    pooled = None
+    for indice, trozo in enumerate(trozos):
+        ids = torch.tensor([trozo], device=device)
+        salida = encoder(ids, output_hidden_states=True)
+        # Penúltimo estado oculto: el último es el de la capa final ya normalizado
+        # de otra forma y diffusers usa el -2 en SDXL.
+        ocultos.append(salida.hidden_states[-2])
+        if querer_pooled and indice == 0:
+            pooled = getattr(salida, "text_embeds", None)
+            if pooled is None:
+                pooled = salida[0]
+    return torch.cat(ocultos, dim=1), pooled
+
+
+def codificar_prompt_sdxl(pipe, positivo: str, negativo: str):
+    """Prompt largo de SDXL con troceo propio. El negativo queda con los mismos trozos."""
+    import torch
+
+    p1, n1, bos1, eos1, pad1 = _preparar_par(pipe.tokenizer, positivo, negativo)
+    p2, n2, bos2, eos2, pad2 = _preparar_par(pipe.tokenizer_2, positivo, negativo)
+    cantidad = max(len(p1), len(p2), len(n1), len(n2))
+    p1 = igualar_trozos(p1, cantidad, bos1, eos1, pad1)
+    p2 = igualar_trozos(p2, cantidad, bos2, eos2, pad2)
+    n1 = igualar_trozos(n1, cantidad, bos1, eos1, pad1)
+    n2 = igualar_trozos(n2, cantidad, bos2, eos2, pad2)
+    with torch.no_grad():
+        h1, _ = _pasar_encoder(pipe.text_encoder, p1)
+        h2, pooled = _pasar_encoder(pipe.text_encoder_2, p2, querer_pooled=True)
+        nh1, _ = _pasar_encoder(pipe.text_encoder, n1)
+        nh2, npooled = _pasar_encoder(pipe.text_encoder_2, n2, querer_pooled=True)
+    return torch.cat([h1, h2], dim=-1), torch.cat([nh1, nh2], dim=-1), pooled, npooled
+
+
 def negativo_forzado(negativo: Optional[str]) -> str:
     """El negativo del usuario se conserva y el bloqueo se concatena al final."""
     base = (negativo or "").strip().strip(",")
@@ -218,10 +335,11 @@ class Trabajo:
 
 
 class GestorModelos:
-    """Carga Illustrious o Qwen, nunca los dos. Al cambiar, suelta el anterior."""
+    """Un solo modelo en memoria. Cambiar de Illustrious, Flux o Qwen suelta el anterior."""
 
     def __init__(self) -> None:
         self.modo: Optional[str] = None
+        self.variante: Optional[str] = None
         self.pipe = None
         self.modelo_texto = None
         self.tokenizer = None
@@ -234,6 +352,7 @@ class GestorModelos:
             self.modelo_texto = None
             self.tokenizer = None
             self.modo = None
+            self.variante = None
             self.id_texto = None
         gc.collect()
         try:
@@ -245,43 +364,25 @@ class GestorModelos:
         except Exception:
             pass
 
-    def asegurar_imagen(self, cache: str, reportar: Callable[[float, str], None]) -> None:
-        if self.modo == "imagen" and self.pipe is not None:
+    def asegurar_imagen(self, cual: str, cache: str, reportar: Callable[[float, str], None]) -> None:
+        if self.modo == "imagen" and self.variante == cual and self.pipe is not None:
             return
         if self.modo is not None:
-            reportar(0.02, "Liberando la GPU del modelo de texto…")
+            reportar(0.02, "Liberando la GPU…")
             self.soltar()
         import torch
-        from diffusers import StableDiffusionXLPipeline
 
         if not torch.cuda.is_available():
-            raise RuntimeError(
-                "No hay GPU. En Colab: Entorno de ejecución → Cambiar tipo de entorno → T4 GPU."
-            )
-        reportar(0.04, "Buscando Illustrious (si no está en Drive, se descarga)…")
-        ruta = _ruta_ilustrious(cache)
-        reportar(0.08, "Cargando Illustrious en la GPU (fp16)…")
-        pipe = StableDiffusionXLPipeline.from_single_file(
-            ruta,
-            torch_dtype=torch.float16,
-            use_safetensors=True,
-        )
-        # Illustrious es SDXL: no trae el checker de SD 1.5. Igual lo apagamos
-        # si la versión de diffusers lo expone. El bloqueo de menores no depende de esto.
-        if hasattr(pipe, "safety_checker"):
-            pipe.safety_checker = None
-        if hasattr(pipe, "requires_safety_checker"):
-            pipe.requires_safety_checker = False
-        pipe = pipe.to("cuda")
-        if hasattr(pipe, "enable_vae_slicing"):
-            pipe.enable_vae_slicing()
-        if hasattr(pipe, "enable_attention_slicing"):
-            pipe.enable_attention_slicing()
-        self.pipe = pipe
+            raise RuntimeError(_mensaje_sin_gpu())
+        if cual == "flux":
+            self.pipe = _cargar_flux(cache, reportar)
+        else:
+            self.pipe = _cargar_ilustrious(cache, reportar)
         self.modo = "imagen"
+        self.variante = cual
 
     def asegurar_texto(self, cual: str, cache: str, reportar: Callable[[float, str], None]) -> None:
-        repo = REPOS_TEXTO[cual]
+        repo = repos_texto()[cual]
         if self.modo == "texto" and self.id_texto == repo and self.modelo_texto is not None:
             return
         if self.modo is not None:
@@ -291,9 +392,17 @@ class GestorModelos:
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
         if not torch.cuda.is_available():
-            raise RuntimeError(
-                "No hay GPU. En Colab: Entorno de ejecución → Cambiar tipo de entorno → T4 GPU."
-            )
+            raise RuntimeError(_mensaje_sin_gpu())
+        if cual == "32b":
+            os.makedirs(cache, exist_ok=True)
+            libres = shutil.disk_usage(cache).free
+            if libres < 70 * (1024**3):
+                raise RuntimeError(
+                    "No cabe el Qwen 32B abliterado: la descarga pesa unos 65 GB y aquí hay "
+                    f"{libres / (1024**3):.0f} GB libres. Elige el 14B."
+                )
+            if torch.cuda.device_count() < 2:
+                raise RuntimeError("El 32B pide dos T4. En Kaggle elige GPU T4 x2, o usa el 14B.")
         reportar(0.06, f"Cargando {repo} en 4-bit… la primera vez son varios GB.")
         cuant = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -301,19 +410,27 @@ class GestorModelos:
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
         )
-        tok = AutoTokenizer.from_pretrained(repo, cache_dir=cache)
-        # device_map fijo a la GPU: el offload a CPU no cabe en los ~12 GB de RAM de la T4.
-        modelo = AutoModelForCausalLM.from_pretrained(
-            repo,
+        token = _token_hf()
+        tok = AutoTokenizer.from_pretrained(repo, cache_dir=cache, token=token)
+        kwargs = dict(
             quantization_config=cuant,
-            device_map={"": 0},
             cache_dir=cache,
             torch_dtype=torch.float16,
+            token=token,
         )
+        if cual == "32b":
+            # Repartido en las dos T4. Lo que no quepa baja a CPU, con tope.
+            kwargs["device_map"] = "auto"
+            kwargs["max_memory"] = {0: "14GiB", 1: "14GiB", "cpu": "20GiB"}
+        else:
+            # Una T4: sin offload a CPU, porque la RAM del sistema no alcanza.
+            kwargs["device_map"] = {"": 0}
+        modelo = AutoModelForCausalLM.from_pretrained(repo, **kwargs)
         self.tokenizer = tok
         self.modelo_texto = modelo
         self.id_texto = repo
         self.modo = "texto"
+        self.variante = cual
 
 
 def _ruta_ilustrious(cache: str) -> str:
@@ -327,25 +444,138 @@ def _ruta_ilustrious(cache: str) -> str:
         repo_id=REPO_IMAGEN,
         filename=ARCHIVO_IMAGEN,
         local_dir=cache,
+        token=_token_hf(),
     )
+
+
+def _activar_tiling(pipe) -> None:
+    # El tiling se pide al VAE. El atajo del pipeline no se usa.
+    pipe.vae.enable_tiling()
+
+
+def _error_flux(exc: Exception) -> Exception:
+    texto = str(exc).lower()
+    if "401" in texto or "gated" in texto or "authorized" in texto or "403" in texto:
+        return RuntimeError(
+            "Flux pide aceptar la licencia en huggingface.co/black-forest-labs/FLUX.1-schnell "
+            "y un token de lectura. Pégalo en HF_TOKEN en la primera celda y vuelve a ejecutar."
+        )
+    return exc
+
+
+def _cargar_ilustrious(cache: str, reportar: Callable[[float, str], None]):
+    import torch
+    from diffusers import StableDiffusionXLPipeline
+
+    reportar(0.04, "Buscando Illustrious…")
+    ruta = _ruta_ilustrious(cache)
+    reportar(0.08, "Cargando Illustrious en la GPU (fp16)…")
+    pipe = StableDiffusionXLPipeline.from_single_file(
+        ruta,
+        torch_dtype=torch.float16,
+        use_safetensors=True,
+    )
+    if hasattr(pipe, "safety_checker"):
+        pipe.safety_checker = None
+    if hasattr(pipe, "requires_safety_checker"):
+        pipe.requires_safety_checker = False
+    pipe = pipe.to("cuda")
+    _activar_tiling(pipe)
+    if hasattr(pipe, "enable_attention_slicing"):
+        pipe.enable_attention_slicing()
+    return pipe
+
+
+def _cargar_flux(cache: str, reportar: Callable[[float, str], None]):
+    import torch
+
+    token = _token_hf()
+    # La T4 no tiene bf16 nativo. NF4 con cálculo fp16, y si falla, fp16 con offload a CPU.
+    reportar(0.05, "Cargando Flux Schnell en NF4…")
+    try:
+        from diffusers import FluxPipeline, FluxTransformer2DModel
+        from transformers import BitsAndBytesConfig, T5EncoderModel
+
+        nf4 = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        transformer = FluxTransformer2DModel.from_pretrained(
+            REPO_FLUX,
+            subfolder="transformer",
+            quantization_config=nf4,
+            torch_dtype=torch.float16,
+            cache_dir=cache,
+            token=token,
+        )
+        text_encoder_2 = T5EncoderModel.from_pretrained(
+            REPO_FLUX,
+            subfolder="text_encoder_2",
+            quantization_config=nf4,
+            torch_dtype=torch.float16,
+            cache_dir=cache,
+            token=token,
+        )
+        pipe = FluxPipeline.from_pretrained(
+            REPO_FLUX,
+            transformer=transformer,
+            text_encoder_2=text_encoder_2,
+            torch_dtype=torch.float16,
+            cache_dir=cache,
+            token=token,
+        )
+        pipe.enable_model_cpu_offload()
+    except Exception as exc:
+        envuelto = _error_flux(exc)
+        if envuelto is not exc:
+            raise envuelto from exc
+        reportar(0.07, "NF4 no entró. Flux en fp16 con descarga a CPU…")
+        try:
+            from diffusers import FluxPipeline
+
+            pipe = FluxPipeline.from_pretrained(
+                REPO_FLUX,
+                torch_dtype=torch.float16,
+                cache_dir=cache,
+                token=token,
+            )
+            pipe.enable_model_cpu_offload()
+        except Exception as segundo:
+            raise _error_flux(segundo) from segundo
+    if hasattr(pipe, "vae"):
+        _activar_tiling(pipe)
+    return pipe
+
+
+def _semilla_de(payload: dict, indice: int) -> int:
+    semilla = payload["semilla"]
+    if semilla is None:
+        return secrets.randbelow(2**31 - 1)
+    return int(semilla) + indice
+
+
+def _guardar_png(imagen) -> str:
+    buf = io.BytesIO()
+    imagen.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], gestor: GestorModelos, cache: str) -> dict:
     import torch
 
-    gestor.asegurar_imagen(cache, reportar)
+    cual = payload["modelo"]
+    gestor.asegurar_imagen(cual, cache, reportar)
     pipe = gestor.pipe
     cantidad = payload["cantidad"]
-    pasos = payload["pasos"]
+    es_flux = cual == "flux"
+    pasos = 4 if es_flux else payload["pasos"]
+    guia = 0.0 if es_flux else payload["guia"]
     imagenes = []
     for indice in range(cantidad):
-        semilla = payload["semilla"]
-        if semilla is None:
-            semilla_i = secrets.randbelow(2**31 - 1)
-        else:
-            semilla_i = int(semilla) + indice
+        semilla_i = _semilla_de(payload, indice)
 
-        def _cb(pipe, step_index, timestep, callback_kwargs, indice=indice, semilla_i=semilla_i):
+        def _cb(pipe, step_index, timestep, callback_kwargs, indice=indice):
             hecho = indice + (step_index + 1) / max(pasos, 1)
             reportar(
                 hecho / cantidad,
@@ -354,37 +584,53 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
             return callback_kwargs
 
         generador = torch.Generator(device="cuda").manual_seed(semilla_i)
-        kwargs = dict(
-            prompt=payload["prompt"],
-            negative_prompt=payload["negativo"],
-            width=payload["ancho"],
-            height=payload["alto"],
-            num_inference_steps=pasos,
-            guidance_scale=payload["guia"],
-            generator=generador,
-        )
+        if es_flux:
+            kwargs = dict(
+                prompt=payload["prompt"],
+                width=payload["ancho"],
+                height=payload["alto"],
+                num_inference_steps=4,
+                guidance_scale=0.0,
+                max_sequence_length=256,
+                generator=generador,
+            )
+        else:
+            prompt_embeds, neg_embeds, pooled, npooled = codificar_prompt_sdxl(
+                pipe, payload["prompt"], payload["negativo"]
+            )
+            kwargs = dict(
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=neg_embeds,
+                pooled_prompt_embeds=pooled,
+                negative_pooled_prompt_embeds=npooled,
+                width=payload["ancho"],
+                height=payload["alto"],
+                num_inference_steps=pasos,
+                guidance_scale=guia,
+                generator=generador,
+            )
         try:
             resultado = pipe(**kwargs, callback_on_step_end=_cb)
         except TypeError:
             resultado = pipe(**kwargs)
-        buf = io.BytesIO()
-        resultado.images[0].save(buf, format="PNG")
         nombre = time.strftime("bastion-%Y%m%d-%H%M%S") + f"-{indice + 1}.png"
         imagenes.append(
             {
-                "png_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
+                "png_base64": _guardar_png(resultado.images[0]),
                 "semilla": semilla_i,
                 "nombre": nombre,
             }
         )
         del resultado
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    modelo = REPO_FLUX if es_flux else f"{REPO_IMAGEN}/{ARCHIVO_IMAGEN}"
     return {
         "tipo": "imagen",
         "imagenes": imagenes,
         "negativo_usado": payload["negativo"],
-        "modelo": f"{REPO_IMAGEN}/{ARCHIVO_IMAGEN}",
+        "modelo": modelo,
     }
 
 
@@ -425,7 +671,7 @@ def generar_relato_real(payload: dict, reportar: Callable[[float, str], None], g
 class Estado:
     def __init__(self, token: str, cache: Optional[str] = None) -> None:
         self.token = token
-        self.cache = cache or os.environ.get("BASTION_CACHE") or "/content/bastion-modelos"
+        self.cache = cache or cache_defecto()
         self.gestor = GestorModelos()
         self.cola: queue.Queue = queue.Queue()
         self.trabajos: dict[str, Trabajo] = {}
@@ -512,8 +758,8 @@ class Estado:
         prompt = (data.get("prompt") or "").strip()
         if not prompt:
             raise ValueError("Escribe un prompt.")
-        if len(prompt) > 2000:
-            raise ValueError("El prompt es demasiado largo (máximo 2000 caracteres).")
+        if len(prompt) > 4000:
+            raise ValueError("El prompt es demasiado largo (máximo 4000 caracteres).")
         termino = termino_imagen_bloqueado(prompt)
         if termino:
             raise PromptBloqueado(
@@ -538,7 +784,8 @@ class Estado:
             "cantidad": _entero(data.get("cantidad"), 1, 1, CANTIDAD_MAX, "Cantidad"),
             "semilla": semilla_val,
             "pasos": _entero(data.get("pasos"), 28, 1, PASOS_MAX, "Pasos"),
-            "guia": _flotante(data.get("guia"), 5.5, 1.0, 12.0, "Guía"),
+            "guia": _flotante(data.get("guia"), 5.5, 0.0, 12.0, "Guía"),
+            "modelo": _modelo_imagen(data.get("modelo")),
         }
 
     def _payload_relato(self, data: dict) -> dict:
@@ -553,9 +800,11 @@ class Estado:
             raise PromptBloqueado(
                 "No puedo escribir eso: el pedido junta menores con contenido sexual o romántico."
             )
-        modelo = (data.get("modelo") or "abliterado").strip().lower()
-        if modelo not in REPOS_TEXTO:
-            raise ValueError("El modelo tiene que ser «abliterado» u «oficial».")
+        disponibles = repos_texto()
+        modelo = (data.get("modelo") or defecto_texto()).strip().lower()
+        if modelo not in disponibles:
+            opciones = ", ".join(disponibles)
+            raise ValueError(f"En {backend_actual()} el relato puede usar: {opciones}.")
         return {
             "pedido": pedido,
             "sistema": sistema,
@@ -577,19 +826,43 @@ class Estado:
                 gpu = torch.cuda.get_device_name(0)
         except Exception:
             gpu = None
+        gpus = 0
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                gpus = torch.cuda.device_count()
+        except Exception:
+            gpus = 0
         with self.lock:
             activos = sum(1 for t in self.trabajos.values() if t.estado in ("en_cola", "generando"))
+        textos = repos_texto()
         return {
             "ok": True,
             "nombre": "Bastión de Albor",
             "version": "0.1.0",
+            "backend": backend_actual(),
             "gpu": gpu,
+            "gpus": gpus,
             "modelo_cargado": self.gestor.modo,
+            "variante": self.gestor.variante,
             "cola": activos,
-            "texto_por_defecto": REPO_TEXTO_ABLIT,
-            "imagen": f"{REPO_IMAGEN}/{ARCHIVO_IMAGEN}",
+            "modelos_imagen": list(MODELOS_IMAGEN),
+            "modelos_texto": list(textos),
+            "texto_por_defecto": defecto_texto(),
+            "imagen_por_defecto": "ilustrious",
+            "repos_texto": textos,
             "negativo_forzado": NEGATIVO_FORZADO,
         }
+
+
+def _modelo_imagen(valor) -> str:
+    modelo = (valor or "ilustrious").strip().lower()
+    if modelo in ("illustrious", "ilustrious", "anime", "aigis"):
+        return "ilustrious"
+    if modelo in ("flux", "realista", "schnell"):
+        return "flux"
+    raise ValueError("La imagen puede ser «ilustrious» o «flux».")
 
 
 def _autorizado(estado: Estado, headers) -> bool:
@@ -738,7 +1011,7 @@ def arrancar(puerto: int = 7860) -> None:
     if not tema:
         tema = "bastion-" + secrets.token_hex(8)
         print("Tema ntfy generado:", tema)
-    cache = os.environ.get("BASTION_CACHE") or "/content/bastion-modelos"
+    cache = cache_defecto()
     os.makedirs(cache, exist_ok=True)
     estado = Estado(token=token, cache=cache)
     estado.iniciar()

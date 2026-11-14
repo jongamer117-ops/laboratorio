@@ -1,8 +1,29 @@
 import base64
+import os
 import time
 import unittest
 
 import bastion_server as srv
+
+
+class TroceoTests(unittest.TestCase):
+    def test_trozos_de_75_con_bos_eos(self):
+        ids = list(range(80))
+        trozos = srv.trocear_ids(ids, bos=1, eos=2, pad=0)
+        self.assertEqual(len(trozos), 2)
+        self.assertTrue(all(len(trozo) == 77 for trozo in trozos))
+        self.assertEqual(trozos[0][0], 1)
+        self.assertEqual(trozos[0][-1], 2)
+        self.assertEqual(trozos[0][1:76], list(range(75)))
+        self.assertEqual(trozos[1][1:6], [75, 76, 77, 78, 79])
+        self.assertEqual(trozos[1][6:-1], [0] * 70)
+
+    def test_negativo_se_rellena_al_mismo_numero_de_trozos(self):
+        corto = srv.trocear_ids([3], bos=1, eos=2, pad=0)
+        alineado = srv.igualar_trozos(corto, 2, bos=1, eos=2, pad=0)
+        self.assertEqual(len(alineado), 2)
+        self.assertEqual(alineado[1], [1, *([0] * 75), 2])
+        self.assertEqual(alineado[0][1], 3)
 
 
 class FiltroTests(unittest.TestCase):
@@ -59,8 +80,8 @@ class ApiTests(unittest.TestCase):
 
     def _relato_falso(self, payload, reportar):
         reportar(0.4, "Escribiendo…")
-        self.assertEqual(payload["modelo"], "abliterado")
-        return {"tipo": "relato", "texto": "El bastión aguantó.", "modelo": srv.REPO_TEXTO_ABLIT}
+        self.assertIn(payload["modelo"], srv.repos_texto())
+        return {"tipo": "relato", "texto": "El bastión aguantó.", "modelo": srv.repos_texto()[payload["modelo"]]}
 
     def _esperar(self, id_trabajo):
         ultimo = None
@@ -75,7 +96,11 @@ class ApiTests(unittest.TestCase):
     def test_salud_sin_token(self):
         datos = self.cliente.get("/api/salud").get_json()
         self.assertTrue(datos["ok"])
-        self.assertEqual(datos["texto_por_defecto"], srv.REPO_TEXTO_ABLIT)
+        self.assertEqual(datos["texto_por_defecto"], "7b")
+        self.assertEqual(datos["backend"], "colab")
+        self.assertEqual(datos["modelos_texto"], ["7b", "14b"])
+        self.assertNotIn("oficial", datos["modelos_texto"])
+        self.assertIn("flux", datos["modelos_imagen"])
         self.assertIn("young", datos["negativo_forzado"])
 
     def test_rechaza_token(self):
@@ -115,6 +140,7 @@ class ApiTests(unittest.TestCase):
         cuerpo = resultado.get_json()
         self.assertEqual(cuerpo["imagenes"][0]["semilla"], 7)
         self.assertIn("underage", cuerpo["negativo_usado"])
+        self.assertEqual(self.estado.trabajos[id_trabajo].payload["modelo"], "ilustrious")
 
     def test_trabajo_de_relato_abliterado_por_defecto(self):
         resp = self.cliente.post(
@@ -130,7 +156,7 @@ class ApiTests(unittest.TestCase):
             headers=self.headers,
         )
         self.assertIn("bastión", resultado.get_json()["texto"])
-        self.assertEqual(resultado.get_json()["modelo"], srv.REPO_TEXTO_ABLIT)
+        self.assertEqual(resultado.get_json()["modelo"], srv.REPO_TEXTO_7B)
 
     def test_resultado_antes_de_tiempo(self):
         self.estado.generar_relato = lambda payload, reportar: time.sleep(0.3) or {"tipo": "relato", "texto": "x", "modelo": "m"}
@@ -142,6 +168,40 @@ class ApiTests(unittest.TestCase):
         id_trabajo = resp.get_json()["id"]
         pronto = self.cliente.get(f"/api/trabajos/{id_trabajo}/resultado", headers=self.headers)
         self.assertIn(pronto.status_code, (409, 200))
+
+    def test_colab_rechaza_oficial_y_32b(self):
+        for modelo in ("oficial", "32b", "qwen"):
+            resp = self.cliente.post(
+                "/api/trabajos",
+                json={"tipo": "relato", "pedido": "Un asedio.", "modelo": modelo},
+                headers=self.headers,
+            )
+            self.assertEqual(resp.status_code, 400, modelo)
+
+    def test_kaggle_ofrece_32b_y_rechaza_7b(self):
+        anterior = os.environ.get("BASTION_BACKEND")
+        os.environ["BASTION_BACKEND"] = "kaggle"
+        try:
+            datos = self.cliente.get("/api/salud").get_json()
+            self.assertEqual(datos["texto_por_defecto"], "32b")
+            self.assertEqual(datos["modelos_texto"], ["32b", "14b"])
+            malo = self.cliente.post(
+                "/api/trabajos",
+                json={"tipo": "relato", "pedido": "Un asedio.", "modelo": "7b"},
+                headers=self.headers,
+            )
+            self.assertEqual(malo.status_code, 400)
+            bueno = self.cliente.post(
+                "/api/trabajos",
+                json={"tipo": "relato", "pedido": "Un asedio.", "modelo": "14b"},
+                headers=self.headers,
+            )
+            self.assertEqual(bueno.status_code, 202)
+        finally:
+            if anterior is None:
+                os.environ.pop("BASTION_BACKEND", None)
+            else:
+                os.environ["BASTION_BACKEND"] = anterior
 
 
 if __name__ == "__main__":

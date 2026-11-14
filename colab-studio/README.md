@@ -34,15 +34,27 @@ En la app, Ajustes:
 - pegar la URL y el token a mano, o
 - escribir el tema ntfy y tocar **Buscar en ntfy**.
 
+Elige **Colab** o **Kaggle** arriba. Cada uno guarda su URL, su token y su tema. El estado dice cuál está en línea y cuántas GPU ve.
+
 Luego **Probar conexión**. Si responde con el nombre de la GPU, ya puedes generar.
 
 La primera imagen o el primer relato tardan más: el modelo se carga en la GPU. Después, dentro de la misma sesión, va más rápido. Si cambias de imagen a texto (o al revés), el servidor suelta el modelo anterior para no quedarse sin memoria.
 
+### Kaggle, si quieres dos T4
+
+1. Verifica el teléfono en la cuenta de Kaggle. Sin eso no hay GPU ni internet.
+2. Nuevo notebook → pega o sube [`server/Servidor_Kaggle.ipynb`](server/Servidor_Kaggle.ipynb).
+3. En Settings del notebook: **Internet On** y Accelerator **GPU T4 x2**.
+4. Ejecuta todo. El cupo gratis es de unas **30 horas de GPU por semana**.
+5. En la app elige **Kaggle**, escanea el QR y prueba la conexión.
+
+Kaggle no monta Drive. Los pesos quedan en `/kaggle/working` y se borran al cerrar la sesión.
+
 ## Qué genera
 
-**Imagen.** `OnomaAIResearch/Illustrious-xl-early-release-v0`, archivo `Illustrious-XL-v0.1.safetensors`, con diffusers `from_single_file` en fp16. No se añade un filtro NSFW encima del modelo.
+**Imagen.** Por defecto Illustrious (`OnomaAIResearch/Illustrious-xl-early-release-v0`, archivo `Illustrious-XL-v0.1.safetensors`, `from_single_file`, fp16). Los prompts largos se trocean a 75 tokens por encoder, con BOS y EOS, el penúltimo estado oculto y el pooled de `text_encoder_2` del primer trozo. El negativo se rellena hasta el mismo número de trozos. No se usa compel. Opción realista: `black-forest-labs/FLUX.1-schnell` en NF4 (la T4 no tiene bf16 nativo); si NF4 falla, fp16 con descarga a CPU. Flux va a 4 pasos, guía 0 y `max_sequence_length` 256. No hay filtro NSFW extra. Si Flux pide licencia, acepta el repo en Hugging Face y pega un token de lectura en `HF_TOKEN`.
 
-**Texto, por defecto.** `huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2` en 4-bit (bitsandbytes, nf4). Comprobado en Hugging Face: el repo existe, es público y no está gated. Opción en la app: `Qwen/Qwen2.5-7B-Instruct` (el oficial).
+**Texto, solo sin censura.** En Colab (una T4): por defecto `huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2`, y opción 14B. En Kaggle (dos T4): por defecto `huihui-ai/Qwen2.5-32B-Instruct-abliterated` en 4-bit NF4, repartido con `max_memory` de 14 GiB, 14 GiB y 20 GiB de CPU. El 14B de huihui responde 401 sin token, así que esa opción es el safetensors público `sci4ai/Qwen2.5-14B-Instruct-Abliterated`. No hay Qwen oficial.
 
 El chat se arma así, porque devolver tensores directo de `apply_chat_template` rompe en transformers recientes:
 
@@ -92,9 +104,16 @@ Imagen: `tipo`, `prompt`, `negativo`, `ancho`, `alto`, `cantidad` (1–4, en ser
 - Las condiciones de Colab **no están pensadas para usar el plan gratuito como servidor o interfaz remota** para otras personas. Esto es una herramienta personal, de un solo usuario, con la pestaña abierta.
 - Cada vez que se reinicia el entorno hay que volver a ejecutar el notebook. La URL del túnel cambia.
 
+### Kaggle gratuito
+
+- Hace falta **teléfono verificado**, **Internet On** y **GPU T4 x2**. Sin internet no hay túnel ni descarga de modelos.
+- El cupo de GPU es de unas **30 horas por semana**. La sesión también se puede cortar antes.
+- El disco de `/kaggle/working` no guarda nada entre sesiones. El Qwen 32B pesa unos **65 GB** ya descargado: si no cabe, el servidor lo dice y en la app se elige el **14B**.
+- Dos T4 son para el 32B. Flux e Illustrious usan una y sueltan la otra al cambiar de modelo.
+
 ### T4: ~15 GB de VRAM y ~12 GB de RAM
 
-Illustrious XL en fp16 y Qwen 7B en 4-bit **no caben juntos**. El servidor carga uno, y al pedir el otro lo suelta (`empty_cache`). Aun así, una resolución grande o varios pasos pueden llenar la VRAM: el trabajo falla con un mensaje pidiendo bajar tamaño o pasos. Lo seguro en esta GPU es **832×1216, una imagen, ~28 pasos**. Cantidad 3 o 4 se pinta en serie y tarda mucho. No se hace offload a CPU: la RAM del sistema no alcanza.
+Illustrious XL en fp16 y un Qwen en 4-bit **no caben juntos**. El servidor carga uno, y al pedir el otro lo suelta. En Colab una sola T4 no corre el 32B. Lo seguro para pintar es **832×1216, una imagen, ~28 pasos** (Flux ignora eso y usa 4 pasos). Cantidad 3 o 4 se pinta en serie. El 7B y el 14B no hacen offload a CPU: la RAM de Colab no alcanza. El 32B, solo en Kaggle, sí puede dejar una parte en CPU.
 
 ### Descarga de modelos
 

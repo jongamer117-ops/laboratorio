@@ -13,6 +13,21 @@ const val NEGATIVO_BASE = "lowres, bad anatomy, bad hands, extra digits, blurry,
 
 const val NEGATIVO_FORZADO = "child, loli, shota, young, underage"
 
+fun nombreModeloTexto(id: String): String = when (id) {
+    "32b" -> "32B sin censura"
+    "14b" -> "14B sin censura"
+    "7b" -> "7B sin censura"
+    else -> id
+}
+
+fun nombreModeloImagen(id: String): String = when (id) {
+    "flux" -> "Flux (realista)"
+    else -> "Illustrious (anime)"
+}
+
+fun modelosTextoDe(servidor: String): List<String> =
+    if (servidor == "kaggle") listOf("32b", "14b") else listOf("7b", "14b")
+
 const val SISTEMA_DEFAULT =
     "Eres el cronista de Bastión de Albor, un juego de defensa de torres de fantasía medieval. " +
         "Escribes en español de México, con frases claras y vívidas. Retratas héroes, bastiones y asedios. " +

@@ -48,6 +48,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.jongamer.bastionalbor.logica.NEGATIVO_FORZADO
 import dev.jongamer.bastionalbor.logica.PRESET_AIGIS
+import dev.jongamer.bastionalbor.logica.nombreModeloImagen
 import dev.jongamer.bastionalbor.tema.colorMarco
 
 private data class Tamano(val etiqueta: String, val ancho: Int, val alto: Int)
@@ -72,8 +73,12 @@ fun PantallaImagen(
     conectado: Boolean,
     reducir: Boolean,
     snack: SnackbarHostState,
+    modelos: List<String>,
     onAjustes: () -> Unit,
 ) {
+    LaunchedEffect(modelos) {
+        if (modelos.isNotEmpty() && vm.modeloImagen !in modelos) vm.modeloImagen = modelos.first()
+    }
     val contexto = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val scroll = rememberScrollState()
@@ -127,6 +132,23 @@ fun PantallaImagen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+        Text("Modelo", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            modelos.forEach { id ->
+                ChipBastion(
+                    seleccionado = vm.modeloImagen == id,
+                    onClick = { vm.modeloImagen = id },
+                    texto = nombreModeloImagen(id),
+                )
+            }
+        }
+        if (vm.modeloImagen == "flux") {
+            Text(
+                "Flux pinta en 4 pasos con guía 0. Puedes escribir una frase. El bloqueo de menores sigue rechazando el prompt.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Text("Tamaño", style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

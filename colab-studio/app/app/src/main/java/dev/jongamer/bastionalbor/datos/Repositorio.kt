@@ -70,6 +70,7 @@ class Repositorio(context: Context) {
         pasos: Int,
         guia: Float,
         marco: String,
+        modelo: String,
         onAvance: suspend (Float, String) -> Unit,
     ): List<ImagenGuardada> = withContext(Dispatchers.IO) {
         val bloqueo = terminoImagenBloqueado(prompt)
@@ -87,6 +88,7 @@ class Repositorio(context: Context) {
             .put("cantidad", cantidad)
             .put("pasos", pasos)
             .put("guia", guia.toDouble())
+            .put("modelo", modelo)
         if (semilla != null) cuerpo.put("semilla", semilla)
         val resultado = cliente.esperar(cuerpo, onAvance)
         val imagenes = resultado.getJSONArray("imagenes")
@@ -99,6 +101,7 @@ class Repositorio(context: Context) {
             .put("guia", guia.toDouble())
             .put("cantidad", cantidad)
             .put("marco", marco)
+            .put("modelo", modelo)
             .toString()
         buildList {
             for (i in 0 until imagenes.length()) {
@@ -275,7 +278,7 @@ class Repositorio(context: Context) {
                     prompt = "El primer asedio del bastión.",
                     negativo = null,
                     sistema = SISTEMA_DEFAULT,
-                    ajustesJson = """{"largo":700,"creatividad":0.8,"modelo":"abliterado"}""",
+                    ajustesJson = """{"largo":700,"creatividad":0.8,"modelo":"7b"}""",
                     semilla = null,
                     creadoEn = System.currentTimeMillis(),
                     uri = uriTxt.toString(),

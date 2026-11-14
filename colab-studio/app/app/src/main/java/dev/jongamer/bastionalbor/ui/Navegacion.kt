@@ -118,10 +118,10 @@ fun AppBastion(repo: Repositorio) {
                     )
                     Text(
                         when {
-                            ajustes.guardada.url.isBlank() -> "Sin servidor"
-                            ajustes.enLinea == true -> "En línea"
-                            ajustes.enLinea == false -> "Apagado"
-                            else -> "Guardado"
+                            ajustes.guardada.url.isBlank() -> if (ajustes.servidor == "kaggle") "Kaggle" else "Colab"
+                            ajustes.enLinea == true -> if (ajustes.servidor == "kaggle") "Kaggle · en línea" else "Colab · en línea"
+                            ajustes.enLinea == false -> if (ajustes.servidor == "kaggle") "Kaggle · apagado" else "Colab · apagado"
+                            else -> if (ajustes.servidor == "kaggle") "Kaggle · guardado" else "Colab · guardado"
                         },
                         style = MaterialTheme.typography.labelMedium,
                         color = if (ajustes.enLinea == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -172,11 +172,11 @@ fun AppBastion(repo: Repositorio) {
                 ) {
                     composable("imagen") {
                         val vm: ImagenViewModel = viewModel(factory = ImagenViewModel.fabrica(repo))
-                        PantallaImagen(vm, ajustes.guardada.url.isNotBlank(), reducir, snack) { ir("ajustes") }
+                        PantallaImagen(vm, ajustes.guardada.url.isNotBlank(), reducir, snack, ajustes.modelosImagen) { ir("ajustes") }
                     }
                     composable("historias") {
                         val vm: HistoriasViewModel = viewModel(factory = HistoriasViewModel.fabrica(repo))
-                        PantallaHistorias(vm, ajustes.guardada.url.isNotBlank(), reducir, snack) { ir("ajustes") }
+                        PantallaHistorias(vm, ajustes.guardada.url.isNotBlank(), reducir, snack, ajustes.modelosTexto) { ir("ajustes") }
                     }
                     composable("galeria") {
                         val vm: GaleriaViewModel = viewModel(factory = GaleriaViewModel.fabrica(repo))

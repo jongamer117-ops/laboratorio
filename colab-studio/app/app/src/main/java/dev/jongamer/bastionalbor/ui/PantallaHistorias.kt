@@ -25,6 +25,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -33,6 +34,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import dev.jongamer.bastionalbor.logica.nombreModeloTexto
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -42,8 +44,12 @@ fun PantallaHistorias(
     conectado: Boolean,
     reducir: Boolean,
     snack: SnackbarHostState,
+    modelos: List<String>,
     onAjustes: () -> Unit,
 ) {
+    LaunchedEffect(modelos) {
+        if (modelos.isNotEmpty() && vm.modelo !in modelos) vm.modelo = modelos.first()
+    }
     val contexto = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val alcance = rememberCoroutineScope()
@@ -60,7 +66,7 @@ fun PantallaHistorias(
             modifier = Modifier.semantics { heading() },
         )
         Text(
-            "Qwen abliterado, en tu Colab. El relato se guarda solo en Documentos.",
+            "Solo modelos sin censura. El relato se guarda solo en Documentos.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -79,11 +85,16 @@ fun PantallaHistorias(
         }
         Text("Modelo", style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ChipBastion(vm.modelo == "abliterado", { vm.modelo = "abliterado" }, "Abliterado")
-            ChipBastion(vm.modelo == "oficial", { vm.modelo = "oficial" }, "Qwen oficial")
+            modelos.forEach { id ->
+                ChipBastion(vm.modelo == id, { vm.modelo = id }, nombreModeloTexto(id))
+            }
         }
         Text(
-            if (vm.modelo == "abliterado") "Por defecto. Menos censura, misma T4." else "El Qwen original, por si lo prefieres.",
+            when (vm.modelo) {
+                "32b" -> "Por defecto en Kaggle. Pide dos T4 y unos 65 GB de disco."
+                "14b" -> "Cabe en una T4. En Kaggle úsalo si el 32B no entra."
+                else -> "Por defecto en Colab. Cabe holgado en una T4."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

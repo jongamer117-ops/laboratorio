@@ -19,6 +19,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.jongamer.bastionalbor.BuildConfig
+import dev.jongamer.bastionalbor.logica.nombreModeloTexto
 
 @Composable
 fun PantallaAjustes(
@@ -34,6 +35,16 @@ fun PantallaAjustes(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text("Ajustes", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.semantics { heading() })
+        Text("Servidor", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ChipBastion(vm.servidor != "kaggle", { vm.elegirServidor("colab") }, "Colab")
+            ChipBastion(vm.servidor == "kaggle", { vm.elegirServidor("kaggle") }, "Kaggle")
+        }
+        Text(
+            "Imagen: Illustrious y Flux. Relatos: ${vm.modelosTexto.joinToString(" y ") { nombreModeloTexto(it) }}.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text(
             estadoConexion(vm),
             style = MaterialTheme.typography.bodyMedium,
@@ -97,9 +108,13 @@ fun PantallaAjustes(
     }
 }
 
-private fun estadoConexion(vm: AjustesViewModel): String = when {
-    vm.guardada.url.isBlank() -> "Sin servidor"
-    vm.enLinea == true -> "En línea"
-    vm.enLinea == false -> "Apagado"
-    else -> "Conexión guardada, sin probar"
+private fun estadoConexion(vm: AjustesViewModel): String {
+    val nombre = if (vm.servidor == "kaggle") "Kaggle" else "Colab"
+    val estado = when {
+        vm.guardada.url.isBlank() -> "sin servidor"
+        vm.enLinea == true -> "en línea"
+        vm.enLinea == false -> "apagado"
+        else -> "guardado, sin probar"
+    }
+    return "$nombre · $estado"
 }

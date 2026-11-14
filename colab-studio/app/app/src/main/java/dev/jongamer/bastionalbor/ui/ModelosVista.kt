@@ -17,8 +17,10 @@ import dev.jongamer.bastionalbor.datos.textoAmigable
 import dev.jongamer.bastionalbor.logica.NEGATIVO_BASE
 import dev.jongamer.bastionalbor.logica.PRESET_AIGIS
 import dev.jongamer.bastionalbor.logica.SISTEMA_DEFAULT
+import dev.jongamer.bastionalbor.logica.modelosTextoDe
 import dev.jongamer.bastionalbor.logica.parsearQr
 import dev.jongamer.bastionalbor.logica.quitarForzado
+import org.json.JSONArray
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
@@ -28,6 +30,9 @@ import org.json.JSONObject
 
 class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
     var guardada by mutableStateOfSafe(Conexion())
+    var servidor by mutableStateOfSafe("colab")
+    var modelosImagen by mutableStateOfSafe(listOf("ilustrious", "flux"))
+    var modelosTexto by mutableStateOfSafe(listOf("7b", "14b"))
     var url by mutableStateOfSafe("")
     var token by mutableStateOfSafe("")
     var tema by mutableStateOfSafe("")
@@ -43,12 +48,14 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
 
     init {
         viewModelScope.launch {
-            repo.ajustes.conexion.collect { conexion ->
-                guardada = conexion
+            repo.ajustes.preferencias.collect { prefs ->
+                guardada = prefs.activa
                 if (!sincronizado) {
-                    url = conexion.url
-                    token = conexion.token
-                    tema = conexion.tema
+                    servidor = prefs.servidor
+                    url = prefs.activa.url
+                    token = prefs.activa.token
+                    tema = prefs.activa.tema
+                    aplicarModelosEstaticos()
                     sincronizado = true
                 }
             }
@@ -63,12 +70,7 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
             try {
                 val salud = repo.cliente.salud()
                 enLinea = true
-                val gpu = salud.optString("gpu")
-                mensaje = if (gpu.isBlank() || gpu == "null") {
-                    "Responde, pero no veo una GPU. En Colab elige T4."
-                } else {
-                    "En línea · $gpu"
-                }
+                aplicarSalud(salud)
             } catch (error: Exception) {
                 enLinea = false
                 mensaje = textoAmigable(error)
@@ -103,6 +105,46 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
             } finally {
                 ocupado = false
             }
+        }
+    }
+
+    fun elegirServidor(nuevo: String) {
+        val destino = if (nuevo == "kaggle") "kaggle" else "colab"
+        if (destino == servidor) return
+        viewModelScope.launch {
+            repo.ajustes.guardarEn(servidor, url, token, tema)
+            repo.ajustes.elegir(destino)
+            val prefs = repo.ajustes.leer()
+            servidor = prefs.servidor
+            val perfil = prefs.activa
+            url = perfil.url
+            token = perfil.token
+            tema = perfil.tema
+            enLinea = null
+            mensaje = ""
+            aplicarModelosEstaticos()
+        }
+    }
+
+    private fun aplicarModelosEstaticos() {
+        modelosImagen = listOf("ilustrious", "flux")
+        modelosTexto = modelosTextoDe(servidor)
+    }
+
+    private fun aplicarSalud(salud: org.json.JSONObject) {
+        val textos = salud.optJSONArray("modelos_texto")
+        val imagenes = salud.optJSONArray("modelos_imagen")
+        if (textos != null && textos.length() > 0) modelosTexto = textos.aLista()
+        if (imagenes != null && imagenes.length() > 0) modelosImagen = imagenes.aLista()
+        val gpu = salud.optString("gpu")
+        val gpus = salud.optInt("gpus")
+        val backend = salud.optString("backend", servidor)
+        val nombre = if (backend == "kaggle") "Kaggle" else "Colab"
+        mensaje = buildString {
+            append(nombre)
+            append(" · En línea")
+            if (gpu.isNotBlank() && gpu != "null") append(" · ").append(gpu)
+            if (gpus > 0) append(" · ").append(gpus).append(" GPU")
         }
     }
 
@@ -171,6 +213,7 @@ class ImagenViewModel(private val repo: Repositorio) : ViewModel() {
     var pasos by mutableStateOfSafe(28f)
     var guia by mutableStateOfSafe(5.5f)
     var marco by mutableStateOfSafe("oro")
+    var modeloImagen by mutableStateOfSafe("ilustrious")
     var generando by mutableStateOfSafe(false)
     var avance by mutableStateOfSafe(0f)
     var mensaje by mutableStateOfSafe("")
@@ -223,6 +266,7 @@ class ImagenViewModel(private val repo: Repositorio) : ViewModel() {
                     pasos = pasos.toInt(),
                     guia = guia,
                     marco = marco,
+                    modelo = modeloImagen,
                 ) { valor, texto ->
                     withContext(Dispatchers.Main) {
                         avance = valor
@@ -269,7 +313,7 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
     var pedido by mutableStateOfSafe("")
     var largo by mutableStateOfSafe(700f)
     var creatividad by mutableStateOfSafe(0.8f)
-    var modelo by mutableStateOfSafe("abliterado")
+    var modelo by mutableStateOfSafe("7b")
     var generando by mutableStateOfSafe(false)
     var avance by mutableStateOfSafe(0f)
     var mensaje by mutableStateOfSafe("")
@@ -292,7 +336,7 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
                         val json = JSONObject(item.ajustesJson)
                         largo = json.optInt("largo", 700).toFloat()
                         creatividad = json.optDouble("creatividad", 0.8).toFloat()
-                        modelo = json.optString("modelo", "abliterado")
+                        modelo = json.optString("modelo", "7b")
                     }
                     repo.rehacerRelato.value = null
                 }
@@ -364,3 +408,5 @@ class GaleriaViewModel(private val repo: Repositorio) : ViewModel() {
 }
 
 private fun <T> mutableStateOfSafe(valor: T) = androidx.compose.runtime.mutableStateOf(valor)
+
+private fun JSONArray.aLista(): List<String> = List(length()) { getString(it) }
