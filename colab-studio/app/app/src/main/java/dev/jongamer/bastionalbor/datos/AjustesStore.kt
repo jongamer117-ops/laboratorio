@@ -20,6 +20,8 @@ data class Preferencias(
     val kaggle: Conexion = Conexion(),
     val manual: Boolean = false,
     val modeloImagen: String = "ilustrious",
+    val notebookPropio: Boolean = false,
+    val minutosOcio: Int = 15,
 ) {
     val activa: Conexion
         get() = if (servidor == "kaggle") kaggle else colab
@@ -40,6 +42,8 @@ class AjustesStore(private val context: Context) {
     private val legadoTema = stringPreferencesKey("tema")
     private val claveManual = stringPreferencesKey("manual")
     private val claveModelo = stringPreferencesKey("modelo_imagen")
+    private val claveNotebook = stringPreferencesKey("notebook_propio")
+    private val claveOcio = stringPreferencesKey("minutos_ocio")
 
     val preferencias: Flow<Preferencias> = context.ajustesDataStore.data.map { prefs ->
         val colab = Conexion(
@@ -58,6 +62,8 @@ class AjustesStore(private val context: Context) {
             kaggle = kaggle,
             manual = prefs[claveManual] == "1",
             modeloImagen = if (prefs[claveModelo] == "flux") "flux" else "ilustrious",
+            notebookPropio = prefs[claveNotebook] == "1",
+            minutosOcio = prefs[claveOcio]?.toIntOrNull()?.coerceIn(5, 120) ?: 15,
         )
     }
 
@@ -94,6 +100,18 @@ class AjustesStore(private val context: Context) {
     suspend fun fijarManual(activo: Boolean) {
         context.ajustesDataStore.edit { prefs ->
             prefs[claveManual] = if (activo) "1" else "0"
+        }
+    }
+
+    suspend fun fijarNotebookPropio(activo: Boolean) {
+        context.ajustesDataStore.edit { prefs ->
+            prefs[claveNotebook] = if (activo) "1" else "0"
+        }
+    }
+
+    suspend fun fijarMinutosOcio(minutos: Int) {
+        context.ajustesDataStore.edit { prefs ->
+            prefs[claveOcio] = minutos.coerceIn(5, 120).toString()
         }
     }
 

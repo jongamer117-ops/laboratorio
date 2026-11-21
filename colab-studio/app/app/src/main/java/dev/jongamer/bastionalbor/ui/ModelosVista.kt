@@ -33,6 +33,14 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
     var guardada by mutableStateOfSafe(Conexion())
     var servidor by mutableStateOfSafe("colab")
     var manual by mutableStateOfSafe(false)
+    var notebookPropio by mutableStateOfSafe(false)
+    var sesionQuiere by mutableStateOfSafe(false)
+    var sesionFase by mutableStateOfSafe("apagado")
+    var sesionMensaje by mutableStateOfSafe("Apagado")
+    var sesionMinutos by mutableStateOfSafe(0)
+    var minutosOcio by mutableStateOfSafe(15f)
+    var usuarioKaggle by mutableStateOfSafe("")
+    var jsonKaggle by mutableStateOfSafe("")
     var modeloImagen by mutableStateOfSafe("ilustrious")
     var modelosImagen by mutableStateOfSafe(listOf("ilustrious", "flux"))
     var modelosTexto by mutableStateOfSafe(listOf("7b", "14b"))
@@ -56,6 +64,9 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
                 if (!sincronizado) {
                     servidor = prefs.servidor
                     manual = prefs.manual
+                    notebookPropio = prefs.notebookPropio
+                    minutosOcio = prefs.minutosOcio.toFloat()
+                    usuarioKaggle = repo.usuarioKaggle()
                     modeloImagen = prefs.modeloImagen
                     url = prefs.activa.url
                     token = prefs.activa.token
@@ -65,6 +76,15 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
                 }
             }
         }
+        viewModelScope.launch {
+            repo.sesion.collect {
+                sesionQuiere = it.quiere
+                sesionFase = it.fase
+                sesionMensaje = it.mensaje
+                sesionMinutos = it.minutos
+                if (it.usuario.isNotBlank()) usuarioKaggle = it.usuario
+            }
+        }
         vigilar()
     }
 
@@ -72,7 +92,7 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
         viewModelScope.launch {
             var espera = 2_000L
             while (true) {
-                if (!manual) {
+                if (notebookPropio && !sesionQuiere) {
                     val ok = runCatching { repo.conectarSiHaceFalta() }.getOrDefault(false)
                     if (ok && repo.ajustes.actual().url.isNotBlank()) {
                         enLinea = true
@@ -93,6 +113,52 @@ class AjustesViewModel(private val repo: Repositorio) : ViewModel() {
                     }
                 }
                 kotlinx.coroutines.delay(espera)
+            }
+        }
+    }
+
+    fun fijarNotebookPropio(activo: Boolean) {
+        notebookPropio = activo
+        viewModelScope.launch { repo.ajustes.fijarNotebookPropio(activo) }
+    }
+
+    fun fijarSesion(quiere: Boolean) {
+        viewModelScope.launch {
+            ocupado = true
+            try {
+                repo.fijarSesion(quiere)
+                mensaje = repo.sesion.value.mensaje
+            } catch (error: Exception) {
+                mensaje = textoAmigable(error)
+            } finally {
+                ocupado = false
+            }
+        }
+    }
+
+    fun fijarOcio(minutos: Float) {
+        minutosOcio = minutos
+        viewModelScope.launch { repo.fijarOcio(minutos.toInt()) }
+    }
+
+    fun guardarJsonKaggle() {
+        val par = dev.jongamer.bastionalbor.logica.parsearKaggleJson(jsonKaggle)
+        if (par == null) {
+            mensaje = "Ese texto no es un kaggle.json. Tiene que traer username y key."
+            return
+        }
+        repo.guardarKaggle(par.first, par.second)
+        usuarioKaggle = par.first
+        jsonKaggle = ""
+        mensaje = "Kaggle guardado para ${par.first}."
+    }
+
+    fun importarKaggle(uri: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val texto = repo.leerTexto(uri)
+            withContext(Dispatchers.Main) {
+                jsonKaggle = texto
+                guardarJsonKaggle()
             }
         }
     }
@@ -304,11 +370,6 @@ class ImagenViewModel(private val repo: Repositorio) : ViewModel() {
     fun generar(modelo: String) {
         if (generando) return
         viewModelScope.launch {
-            val listo = runCatching { repo.conectarSiHaceFalta() }.getOrDefault(false)
-            if (!listo) {
-                error = textoAmigable(ErrorEstudio.SinConexion())
-                return@launch
-            }
             generando = true
             error = null
             imagenes = emptyList()
@@ -416,11 +477,6 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
     fun escribir() {
         if (generando) return
         viewModelScope.launch {
-            val listo = runCatching { repo.conectarSiHaceFalta() }.getOrDefault(false)
-            if (!listo) {
-                error = textoAmigable(ErrorEstudio.SinConexion())
-                return@launch
-            }
             generando = true
             error = null
             resultado = null
@@ -458,11 +514,6 @@ class HistoriasViewModel(private val repo: Repositorio) : ViewModel() {
     fun continuar() {
         if (generando) return
         viewModelScope.launch {
-            val listo = runCatching { repo.conectarSiHaceFalta() }.getOrDefault(false)
-            if (!listo) {
-                error = textoAmigable(ErrorEstudio.SinConexion())
-                return@launch
-            }
             generando = true
             error = null
             resultado = null

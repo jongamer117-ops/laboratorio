@@ -617,11 +617,15 @@ def prompt_con_calidad(prompt: str, modelo: str) -> str:
 
 
 def separar_fondo(imagen):
-    """rembg en CPU: PNG transparente y la misma figura sobre negro."""
+    """rembg isnet-anime en CPU: PNG transparente y la misma figura sobre negro."""
     from PIL import Image
-    from rembg import remove
+    from rembg import new_session, remove
 
-    rgba = remove(imagen.convert("RGBA"))
+    sesion = getattr(separar_fondo, "_sesion", None)
+    if sesion is None:
+        sesion = new_session("isnet-anime")
+        separar_fondo._sesion = sesion
+    rgba = remove(imagen.convert("RGBA"), session=sesion)
     if rgba.mode != "RGBA":
         rgba = rgba.convert("RGBA")
     base = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
@@ -663,8 +667,8 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
                 prompt=payload["prompt"],
                 width=payload["ancho"],
                 height=payload["alto"],
-                num_inference_steps=4,
-                guidance_scale=0.0,
+                num_inference_steps=pasos,
+                guidance_scale=guia,
                 max_sequence_length=256,
                 generator=generador,
             )
@@ -689,6 +693,15 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
             resultado = pipe(**kwargs)
         nombre = time.strftime("bastion-%Y%m%d-%H%M%S") + f"-{indice + 1}.png"
         cruda = resultado.images[0]
+        imagenes.append(
+            {
+                "png_base64": _guardar_png(cruda),
+                "semilla": semilla_i,
+                "nombre": nombre,
+                "variante": "original",
+                "indice": indice,
+            }
+        )
         if payload.get("quitar_fondo", True):
             try:
                 transparente, negro = separar_fondo(cruda)
@@ -696,8 +709,9 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
                     {
                         "png_base64": _guardar_png(transparente),
                         "semilla": semilla_i,
-                        "nombre": nombre.replace(".png", "-transparente.png"),
+                        "nombre": nombre.replace(".png", "-sinfondo.png"),
                         "variante": "transparente",
+                        "indice": indice,
                     }
                 )
                 imagenes.append(
@@ -706,27 +720,11 @@ def generar_imagen_real(payload: dict, reportar: Callable[[float, str], None], g
                         "semilla": semilla_i,
                         "nombre": nombre.replace(".png", "-negro.png"),
                         "variante": "fondo_negro",
+                        "indice": indice,
                     }
                 )
             except Exception as exc:
                 reportar(0.9, f"No pude quitar el fondo ({exc}). Te dejo la imagen completa.")
-                imagenes.append(
-                    {
-                        "png_base64": _guardar_png(cruda),
-                        "semilla": semilla_i,
-                        "nombre": nombre,
-                        "variante": "original",
-                    }
-                )
-        else:
-            imagenes.append(
-                {
-                    "png_base64": _guardar_png(cruda),
-                    "semilla": semilla_i,
-                    "nombre": nombre,
-                    "variante": "original",
-                }
-            )
         del resultado
         gc.collect()
         if torch.cuda.is_available():
@@ -961,6 +959,7 @@ class Estado:
         self.trabajos: dict[str, Trabajo] = {}
         self.lock = threading.Lock()
         self._hilo: Optional[threading.Thread] = None
+        self.ultimo_pedido = time.time()
         self.generar_imagen = lambda payload, reportar: generar_imagen_real(
             payload, reportar, self.gestor, self.cache
         )
@@ -1030,6 +1029,7 @@ class Estado:
             print(f"[{trabajo.id}] error: {mensaje}", flush=True)
 
     def encolar(self, data: dict) -> Trabajo:
+        self.ultimo_pedido = time.time()
         tipo = (data.get("tipo") or "").strip().lower()
         if tipo == "imagen":
             payload = self._payload_imagen(data)
@@ -1166,7 +1166,7 @@ class Estado:
         return {
             "ok": True,
             "nombre": "Bastión de Albor",
-            "version": "0.1.2",
+            "version": "0.1.3",
             "backend": backend_actual(),
             "gpu": gpu,
             "gpus": gpus,
@@ -1221,6 +1221,18 @@ def create_app(estado: Estado):
     @app.get("/api/salud")
     def salud():
         return jsonify(estado.salud())
+
+    @app.post("/api/apagar")
+    def apagar():
+        if not _autorizado(estado, request.headers):
+            return jsonify({"error": "token", "mensaje": "El token no coincide."}), 401
+
+        def _salir() -> None:
+            time.sleep(0.4)
+            os._exit(0)
+
+        threading.Thread(target=_salir, name="bastion-apagar", daemon=True).start()
+        return jsonify({"ok": True, "mensaje": "Apagando el servidor."})
 
     @app.post("/api/trabajos")
     def crear():
@@ -1369,6 +1381,131 @@ def asegurar_cloudflared() -> str:
     return destino
 
 
+def _vigilar_ocio(estado: "Estado", proceso) -> None:
+    try:
+        minutos = int(os.environ.get("BASTION_IDLE_MINUTES") or "0")
+    except ValueError:
+        minutos = 0
+    if minutos <= 0:
+        return
+    while True:
+        time.sleep(20)
+        if time.time() - estado.ultimo_pedido >= minutos * 60:
+            print(f"Sin pedidos por {minutos} min. Apagando para no gastar la GPU.", flush=True)
+            try:
+                proceso.terminate()
+            except Exception:
+                pass
+            os._exit(0)
+
+
+def ejecutar_lote_imagen(pedido: dict) -> None:
+    cache = os.environ.get("BASTION_CACHE") or "/tmp/bastion-modelos"
+    os.makedirs(cache, exist_ok=True)
+    gestor = GestorModelos()
+    modelo = _modelo_imagen(pedido.get("modelo"))
+    prompt = (pedido.get("prompt") or "").strip()
+    if termino_imagen_bloqueado(prompt):
+        raise PromptBloqueado("El prompt trae un término de menores. No lo genero.")
+    payload = {
+        "prompt": prompt_con_calidad(prompt, modelo),
+        "negativo": negativo_forzado(pedido.get("negativo") or "", modelo),
+        "ancho": int(pedido.get("ancho") or 832),
+        "alto": int(pedido.get("alto") or 1216),
+        "cantidad": max(1, min(4, int(pedido.get("cantidad") or 1))),
+        "semilla": pedido.get("semilla"),
+        "pasos": int(pedido.get("pasos") or (4 if modelo == "flux" else 28)),
+        "guia": float(pedido["guia"]) if pedido.get("guia") is not None else (0.0 if modelo == "flux" else 4.5),
+        "modelo": modelo,
+        "quitar_fondo": True,
+    }
+
+    def reportar(avance: float, mensaje: str) -> None:
+        print(f"{avance:.2f} {mensaje}", flush=True)
+
+    resultado = generar_imagen_real(payload, reportar, gestor, cache)
+    salida = "/kaggle/working/salida"
+    os.makedirs(salida, exist_ok=True)
+    sufijo = {"original": "normal", "transparente": "sinfondo", "fondo_negro": "negro"}
+    archivos = []
+    for item in resultado["imagenes"]:
+        indice = int(item.get("indice") or 0)
+        nombre = f"{indice:02d}-{sufijo.get(item.get('variante'), 'normal')}.png"
+        with open(os.path.join(salida, nombre), "wb") as archivo:
+            archivo.write(base64.b64decode(item["png_base64"]))
+        archivos.append({"nombre": nombre, "variante": item.get("variante"), "semilla": item.get("semilla")})
+    with open(os.path.join(salida, "manifest.json"), "w", encoding="utf-8") as archivo:
+        json.dump({"tipo": "imagen", "modelo": resultado.get("modelo"), "archivos": archivos}, archivo, ensure_ascii=False)
+    print("BASTION_LISTO imagen", flush=True)
+
+
+def ejecutar_lote_historia(pedido: dict) -> None:
+    cache = os.environ.get("BASTION_CACHE") or "/tmp/bastion-modelos"
+    os.makedirs(cache, exist_ok=True)
+    gestor = GestorModelos()
+    tipo = (pedido.get("tipo") or "relato").strip().lower()
+
+    def reportar(avance: float, mensaje: str) -> None:
+        print(f"{avance:.2f} {mensaje}", flush=True)
+
+    salida = "/kaggle/working/salida"
+    os.makedirs(salida, exist_ok=True)
+    if tipo == "novela":
+        biblia = pedido.get("biblia") or ""
+        esquema = pedido.get("esquema") or ""
+        if relato_bloqueado(biblia, esquema):
+            raise PromptBloqueado("La biblia o el esquema junta menores con contenido sexual.")
+        payload = {
+            "proyecto": pedido.get("proyecto") or "proyecto",
+            "biblia": biblia,
+            "esquema": esquema,
+            "resumenes": pedido.get("resumenes") or [],
+            "cola": pedido.get("cola") or "",
+            "siguiente": int(pedido.get("siguiente") or 1),
+            "cantidad": max(1, min(10, int(pedido.get("cantidad") or 1))),
+            "creatividad": float(pedido.get("creatividad") or 0.9),
+            "modelo": (pedido.get("modelo") or "14b").strip().lower(),
+        }
+        resultado = generar_novela_real(payload, reportar, gestor, cache)
+        for cap in resultado["capitulos"]:
+            _escribir(os.path.join(salida, cap["nombre"]), cap["texto"])
+        with open(os.path.join(salida, "resultado.json"), "w", encoding="utf-8") as archivo:
+            json.dump(
+                {
+                    "tipo": "novela",
+                    "proyecto": resultado["proyecto"],
+                    "biblia": resultado["biblia"],
+                    "esquema": resultado["esquema"],
+                    "resumenes": resultado["resumenes"],
+                    "cola": resultado["cola"],
+                    "siguiente": resultado["siguiente"],
+                    "capitulos": [
+                        {"numero": c["numero"], "nombre": c["nombre"], "resumen": c["resumen"]}
+                        for c in resultado["capitulos"]
+                    ],
+                },
+                archivo,
+                ensure_ascii=False,
+            )
+    else:
+        sistema = pedido.get("sistema") or ""
+        texto = pedido.get("pedido") or ""
+        if relato_bloqueado(sistema, texto):
+            raise PromptBloqueado("El pedido junta menores con contenido sexual.")
+        payload = {
+            "sistema": sistema,
+            "pedido": texto,
+            "largo": int(pedido.get("largo") or 700),
+            "creatividad": float(pedido.get("creatividad") or 0.9),
+            "modelo": (pedido.get("modelo") or "14b").strip().lower(),
+        }
+        resultado = generar_relato_real(payload, reportar, gestor, cache)
+        _escribir(os.path.join(salida, "relato.md"), resultado["texto"])
+        with open(os.path.join(salida, "resultado.json"), "w", encoding="utf-8") as archivo:
+            json.dump({"tipo": "relato", "texto": resultado["texto"], "modelo": resultado["modelo"]}, archivo, ensure_ascii=False)
+    print("BASTION_LISTO historia", flush=True)
+
+
 def arrancar(puerto: int = 7860) -> None:
     """Arranca Flask, abre el túnel, muestra el QR y publica en ntfy. Bloquea la celda."""
     import subprocess
@@ -1412,6 +1549,8 @@ def arrancar(puerto: int = 7860) -> None:
             print("No se pudo publicar en el tema extra:", exc)
     _mostrar_qr(url, token, tema)
     print("Deja esta celda corriendo. Si el túnel se cae, vuelve a ejecutarla.", flush=True)
+    estado.ultimo_pedido = time.time()
+    threading.Thread(target=_vigilar_ocio, args=(estado, proceso), name="bastion-ocio", daemon=True).start()
     try:
         while True:
             time.sleep(20)

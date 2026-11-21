@@ -20,7 +20,10 @@ import dev.jongamer.bastionalbor.logica.nombreArchivo
 import dev.jongamer.bastionalbor.logica.relatoMarkdown
 import dev.jongamer.bastionalbor.logica.terminoImagenBloqueado
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import org.json.JSONObject
@@ -52,6 +55,15 @@ data class NovelaHecha(
     val capitulos: List<CapituloHecho>,
 )
 
+data class EstadoSesion(
+    val quiere: Boolean = false,
+    val fase: String = "apagado",
+    val mensaje: String = "Apagado",
+    val minutos: Int = 0,
+    val minutosOcio: Int = 15,
+    val usuario: String = "",
+)
+
 data class RelatoGuardado(
     val texto: String,
     val uri: Uri,
@@ -78,6 +90,42 @@ class Repositorio(context: Context) {
 
     var demoModo: String? = null
     var demoBitmap: Bitmap? = null
+    private val credencialesKaggle = CredencialesKaggle(app)
+    private val clienteKaggle = ClienteKaggle(
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(180, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.SECONDS)
+            .build(),
+    )
+    val sesion = MutableStateFlow(EstadoSesion())
+    private val sesionMutex = Mutex()
+    private var sesionInicio = 0L
+
+    fun leerTexto(uri: android.net.Uri): String =
+        app.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
+
+    fun usuarioKaggle(): String = credencialesKaggle.leer()?.usuario.orEmpty()
+
+    fun guardarKaggle(usuario: String, llave: String) {
+        credencialesKaggle.guardar(usuario, llave)
+        sesion.value = sesion.value.copy(usuario = usuario)
+    }
+
+    suspend fun fijarSesion(quiere: Boolean, onAvance: suspend (Float, String) -> Unit = { _, _ -> }) {
+        if (!quiere) {
+            apagarSesion()
+            return
+        }
+        sesion.value = sesion.value.copy(quiere = true, fase = "arrancando", mensaje = "Arrancando…")
+        arrancarSesion(onAvance)
+    }
+
+    suspend fun fijarOcio(minutos: Int) {
+        ajustes.fijarMinutosOcio(minutos)
+        sesion.value = sesion.value.copy(minutosOcio = minutos.coerceIn(5, 120))
+    }
 
     suspend fun generarImagen(
         prompt: String,
@@ -98,6 +146,7 @@ class Repositorio(context: Context) {
                 "Bloqueado por el término «$bloqueo». Cámbialo. El negativo de menores se aplica en el servidor y no se puede quitar.",
             )
         }
+        if (!quiereServidor(onAvance)) return@withContext loteImagen(prompt, negativo, cantidad, semilla, pasos, guia, marco, modelo, onAvance)
         val cuerpo = JSONObject()
             .put("tipo", "imagen")
             .put("prompt", prompt.trim())
@@ -169,6 +218,7 @@ class Repositorio(context: Context) {
         modelo: String,
         onAvance: suspend (Float, String) -> Unit,
     ): RelatoGuardado = withContext(Dispatchers.IO) {
+        if (!quiereServidor(onAvance)) return@withContext loteRelato(sistema, pedido, largo, creatividad, modelo, onAvance)
         val cuerpo = JSONObject()
             .put("tipo", "relato")
             .put("sistema", sistema.trim())
@@ -216,6 +266,9 @@ class Repositorio(context: Context) {
         creatividad: Float,
         onAvance: suspend (Float, String) -> Unit,
     ): NovelaHecha = withContext(Dispatchers.IO) {
+        if (!quiereServidor(onAvance)) {
+            return@withContext loteNovela(proyecto, biblia, esquema, resumenes, cola, siguiente, cantidad, modelo, creatividad, onAvance)
+        }
         if (!conectarSiHaceFalta()) throw ErrorEstudio.SinConexion()
         val cuerpo = JSONObject()
             .put("tipo", "novela")
@@ -341,6 +394,237 @@ class Repositorio(context: Context) {
     private fun archivoNovela(nombre: String): java.io.File {
         val dir = java.io.File(app.filesDir, "novelas").apply { mkdirs() }
         return java.io.File(dir, "${nombreSeguro(nombre)}.json")
+    }
+
+    private suspend fun quiereServidor(onAvance: suspend (Float, String) -> Unit): Boolean {
+        val prefs = ajustes.leer()
+        if (sesion.value.quiere) {
+            if (sesion.value.fase != "listo") arrancarSesion(onAvance)
+            if (!conectarSiHaceFalta()) throw ErrorEstudio.Servidor("La sesión no anunció el túnel. Espera un poco más o apágala.")
+            return true
+        }
+        if (prefs.notebookPropio) {
+            if (!conectarSiHaceFalta()) throw ErrorEstudio.SinConexion()
+            return true
+        }
+        return false
+    }
+
+    private fun exigirKaggle(): CredencialKaggle =
+        credencialesKaggle.leer() ?: throw ErrorEstudio.Servidor("Pega tu kaggle.json en Ajustes. Hace falta una sola vez.")
+
+    suspend fun arrancarSesion(onAvance: suspend (Float, String) -> Unit = { _, _ -> }) = sesionMutex.withLock {
+        val cred = exigirKaggle()
+        val prefs = ajustes.leer()
+        val idle = prefs.minutosOcio
+        sesionInicio = System.currentTimeMillis()
+        apagarPendiente = false
+        sesion.value = EstadoSesion(true, "arrancando", "Arrancando…", 0, idle, cred.usuario)
+        onAvance(0.05f, "Arrancando la sesión en Kaggle…")
+        val codigo = PlantillaKernel.armar(app, "sesion", null, idle)
+        clienteKaggle.empujar(cred, "bastion-sesion", codigo)
+        val limite = System.currentTimeMillis() + 25 * 60_000L
+        while (System.currentTimeMillis() < limite && sesion.value.quiere) {
+            val minutos = ((System.currentTimeMillis() - sesionInicio) / 60_000L).toInt()
+            sesion.value = sesion.value.copy(minutos = minutos, mensaje = "Arrancando…")
+            onAvance(0.2f, "Arrancando… ${minutos} min de GPU")
+            val avisos = runCatching { cliente.avisosDescubrimiento() }.getOrDefault(emptyList())
+            val fresco = avisos.filter { it.backend == "kaggle" && it.en >= sesionInicio / 1000.0 - 30 }
+                .maxByOrNull { it.en }
+            if (fresco != null) {
+                ajustes.guardarEn("kaggle", fresco.url, fresco.token, "kaggle")
+                ajustes.elegir("kaggle")
+                if (runCatching { cliente.saludEn(fresco.url, fresco.token) }.isSuccess) {
+                    if (apagarPendiente) {
+                        runCatching { cliente.apagar() }
+                        sesion.value = sesion.value.copy(quiere = false, fase = "apagado", mensaje = "Apagado")
+                        return
+                    }
+                    sesion.value = sesion.value.copy(fase = "listo", mensaje = "Listo", minutos = minutos)
+                    onAvance(1f, "Sesión lista")
+                    return
+                }
+            }
+            delay(20_000)
+        }
+        if (sesion.value.quiere) {
+            sesion.value = sesion.value.copy(fase = "apagado", quiere = false, mensaje = "No arrancó")
+            throw ErrorEstudio.Servidor("La sesión no se anunció. Revisa teléfono verificado, GPU e internet en Kaggle.")
+        }
+    }
+
+    suspend fun apagarSesion() {
+        apagarPendiente = true
+        runCatching { cliente.apagar() }
+        sesion.value = sesion.value.copy(quiere = false, fase = "apagado", mensaje = "Apagado")
+    }
+
+    private var apagarPendiente = false
+
+    private suspend fun loteImagen(
+        prompt: String,
+        negativo: String,
+        cantidad: Int,
+        semilla: Long?,
+        pasos: Int,
+        guia: Float,
+        marco: String,
+        modelo: String,
+        onAvance: suspend (Float, String) -> Unit,
+    ): List<ImagenGuardada> {
+        val cred = exigirKaggle()
+        val pedido = JSONObject()
+            .put("tipo", "imagen")
+            .put("prompt", prompt.trim())
+            .put("negativo", negativo.trim())
+            .put("ancho", 832)
+            .put("alto", 1216)
+            .put("cantidad", cantidad)
+            .put("pasos", pasos)
+            .put("guia", guia.toDouble())
+            .put("modelo", modelo)
+        if (semilla != null) pedido.put("semilla", semilla)
+        val codigo = PlantillaKernel.armar(app, "imagen", pedido, 15)
+        onAvance(0.05f, "Enviando el kernel a Kaggle…")
+        clienteKaggle.empujar(cred, "bastion-imagenes", codigo)
+        clienteKaggle.esperar(cred, "bastion-imagenes", 90, onAvance)
+        val dir = java.io.File(app.cacheDir, "kaggle-imagen").apply { deleteRecursively(); mkdirs() }
+        clienteKaggle.descargar(cred, "bastion-imagenes", dir)
+        val pngs = dir.listFiles { f -> f.extension == "png" }?.sortedBy { it.name }.orEmpty()
+        if (pngs.isEmpty()) throw ErrorEstudio.Servidor("Kaggle terminó sin imágenes.")
+        return pngs.map { archivo ->
+            val bytes = archivo.readBytes()
+            val png = PngTexto.insertar(bytes, linkedMapOf("prompt" to prompt.trim(), "app" to "BastionAlbor", "model" to modelo))
+            val uri = archivos.guardarPng(png, archivo.name)
+            db.generaciones().insertar(
+                Generacion(
+                    tipo = "imagen",
+                    prompt = prompt.trim(),
+                    negativo = negativo,
+                    sistema = null,
+                    ajustesJson = pedido.toString(),
+                    semilla = semilla,
+                    creadoEn = System.currentTimeMillis(),
+                    uri = uri.toString(),
+                    nombre = archivo.name,
+                    modelo = modelo,
+                    marco = marco,
+                ),
+            )
+            ImagenGuardada(android.graphics.BitmapFactory.decodeByteArray(png, 0, png.size), uri, semilla ?: 0L, archivo.name)
+        }
+    }
+
+    private suspend fun loteRelato(
+        sistema: String,
+        pedido: String,
+        largo: Int,
+        creatividad: Float,
+        modelo: String,
+        onAvance: suspend (Float, String) -> Unit,
+    ): RelatoGuardado {
+        if (modelo == "32b") {
+            throw ErrorEstudio.Servidor("El kernel automático tiene una sola GPU. Elige el 14B, o abre el notebook a mano con dos T4.")
+        }
+        val cred = exigirKaggle()
+        val cuerpo = JSONObject()
+            .put("tipo", "relato")
+            .put("sistema", sistema)
+            .put("pedido", pedido)
+            .put("largo", largo)
+            .put("creatividad", creatividad.toDouble())
+            .put("modelo", modelo)
+        return guardarTextoKaggle(cred, "bastion-historias", cuerpo, "relato.md", pedido, onAvance).let { (texto, uri, nombre) ->
+            RelatoGuardado(texto, uri, nombre, modelo)
+        }
+    }
+
+    private suspend fun loteNovela(
+        proyecto: String,
+        biblia: String,
+        esquema: String,
+        resumenes: List<Pair<Int, String>>,
+        cola: String,
+        siguiente: Int,
+        cantidad: Int,
+        modelo: String,
+        creatividad: Float,
+        onAvance: suspend (Float, String) -> Unit,
+    ): NovelaHecha {
+        if (modelo == "32b") {
+            throw ErrorEstudio.Servidor("El kernel automático tiene una sola GPU. Elige el 14B, o abre el notebook a mano con dos T4.")
+        }
+        val cred = exigirKaggle()
+        val cuerpo = JSONObject()
+            .put("tipo", "novela")
+            .put("proyecto", proyecto)
+            .put("biblia", biblia)
+            .put("esquema", esquema)
+            .put("cola", cola)
+            .put("siguiente", siguiente)
+            .put("cantidad", cantidad)
+            .put("modelo", modelo)
+            .put("creatividad", creatividad.toDouble())
+        val lista = org.json.JSONArray()
+        resumenes.takeLast(12).forEach { (n, texto) -> lista.put(JSONObject().put("n", n).put("texto", texto)) }
+        cuerpo.put("resumenes", lista)
+        onAvance(0.05f, "Enviando el capítulo a Kaggle…")
+        clienteKaggle.empujar(cred, "bastion-historias", PlantillaKernel.armar(app, "historia", cuerpo, 15))
+        clienteKaggle.esperar(cred, "bastion-historias", 20 * cantidad, onAvance)
+        val dir = java.io.File(app.cacheDir, "kaggle-historia").apply { deleteRecursively(); mkdirs() }
+        clienteKaggle.descargar(cred, "bastion-historias", dir)
+        val resultado = JSONObject(java.io.File(dir, "resultado.json").readText())
+        val carpeta = "Documents/BastionAlbor/${nombreSeguro(proyecto)}"
+        val capitulos = mutableListOf<CapituloHecho>()
+        val arr = resultado.optJSONArray("capitulos")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val item = arr.getJSONObject(i)
+                val nombre = item.optString("nombre")
+                val texto = java.io.File(dir, nombre).takeIf { it.exists() }?.readText().orEmpty()
+                val uri = archivos.guardarTextoEn(carpeta, nombre, texto)
+                capitulos += CapituloHecho(item.optInt("numero"), texto, item.optString("resumen"), nombre, uri.toString())
+            }
+        }
+        val resumenesNuevos = mutableListOf<Pair<Int, String>>()
+        val res = resultado.optJSONArray("resumenes")
+        if (res != null) {
+            for (i in 0 until res.length()) {
+                val r = res.getJSONObject(i)
+                resumenesNuevos += r.optInt("n") to r.optString("texto")
+            }
+        }
+        val hecha = NovelaHecha(
+            proyecto = resultado.optString("proyecto", nombreSeguro(proyecto)),
+            biblia = resultado.optString("biblia", biblia),
+            esquema = resultado.optString("esquema", esquema),
+            resumenes = resumenesNuevos,
+            cola = resultado.optString("cola"),
+            siguiente = resultado.optInt("siguiente", siguiente + capitulos.size),
+            capitulos = capitulos,
+        )
+        archivos.guardarTextoEn(carpeta, "biblia.txt", hecha.biblia)
+        guardarNovelaLocal(proyecto, hecha)
+        return hecha
+    }
+
+    private suspend fun guardarTextoKaggle(
+        cred: CredencialKaggle,
+        slug: String,
+        cuerpo: JSONObject,
+        nombre: String,
+        pedido: String,
+        onAvance: suspend (Float, String) -> Unit,
+    ): Triple<String, android.net.Uri, String> {
+        onAvance(0.05f, "Enviando el relato a Kaggle…")
+        clienteKaggle.empujar(cred, slug, PlantillaKernel.armar(app, "historia", cuerpo, 15))
+        clienteKaggle.esperar(cred, slug, 40, onAvance)
+        val dir = java.io.File(app.cacheDir, "kaggle-relato").apply { deleteRecursively(); mkdirs() }
+        clienteKaggle.descargar(cred, slug, dir)
+        val texto = java.io.File(dir, nombre).takeIf { it.exists() }?.readText()
+            ?: JSONObject(java.io.File(dir, "resultado.json").readText()).optString("texto")
+        val uri = archivos.guardarTexto(relatoMarkdown("", pedido, texto, cuerpo.optString("modelo")), nombre)
+        return Triple(texto, uri, nombre)
     }
 
     suspend fun borrar(item: Generacion) {

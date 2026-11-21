@@ -22,6 +22,11 @@ class ClienteColab(
     private val http: OkHttpClient,
     private val ajustes: AjustesStore,
 ) {
+    suspend fun apagar() {
+        val (base, token) = credenciales()
+        pedir("$base/api/apagar", token, JSONObject())
+    }
+
     suspend fun salud(): JSONObject {
         val (base, token) = credenciales()
         return saludEn(base, token)

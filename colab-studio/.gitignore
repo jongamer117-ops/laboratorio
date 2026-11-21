@@ -1,6 +1,7 @@
 .gradle/
 build/
 local.properties
+app/app/src/main/assets/kaggle/
 *.jks
 *.keystore
 !app/keystore/bastion-release.jks

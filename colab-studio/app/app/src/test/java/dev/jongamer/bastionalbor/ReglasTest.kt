@@ -3,7 +3,9 @@ package dev.jongamer.bastionalbor
 import dev.jongamer.bastionalbor.logica.NEGATIVO_FORZADO
 import dev.jongamer.bastionalbor.logica.esMasNueva
 import dev.jongamer.bastionalbor.logica.extraerPedido
+import dev.jongamer.bastionalbor.logica.mensajeKaggle
 import dev.jongamer.bastionalbor.logica.nombreSeguro
+import dev.jongamer.bastionalbor.logica.parsearKaggleJson
 import dev.jongamer.bastionalbor.logica.perfilImagen
 import dev.jongamer.bastionalbor.logica.negativoForzado
 import dev.jongamer.bastionalbor.logica.parsearQr
@@ -50,6 +52,17 @@ class ReglasTest {
         assertTrue(esMasNueva("v0.2.0", "0.1.0"))
         assertFalse(esMasNueva("v0.1.0", "0.1.0"))
         assertFalse(esMasNueva("0.1.0", "0.2.0"))
+    }
+
+    @Test
+    fun laLlaveDeKaggleSeLeeYLosErroresSonClaros() {
+        val par = parsearKaggleJson("""{"username":"ana","key":"abc"}""")
+        assertEquals("ana", par?.first)
+        assertEquals("abc", par?.second)
+        assertEquals(null, parsearKaggleJson("no es json"))
+        assertTrue(mensajeKaggle(401, "Unauthorized").contains("llave"))
+        assertTrue(mensajeKaggle(400, "You must verify your phone").contains("teléfono"))
+        assertTrue(mensajeKaggle(400, "GPU quota exceeded").contains("cuota"))
     }
 
     @Test

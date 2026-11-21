@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -31,6 +32,7 @@ fun PantallaAjustes(
     vm: AjustesViewModel,
     reducir: Boolean,
     onEscanear: () -> Unit,
+    onImportar: () -> Unit,
 ) {
     Column(
         Modifier
@@ -47,6 +49,46 @@ fun PantallaAjustes(
         )
         if (vm.mensaje.isNotBlank() && !vm.mensaje.startsWith("Conectado")) {
             Text(vm.mensaje, style = MaterialTheme.typography.bodyMedium)
+        }
+        Text(
+            if (vm.usuarioKaggle.isBlank()) "Falta kaggle.json" else "Kaggle: ${vm.usuarioKaggle}",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Text(
+            "En kaggle.com, tu foto → Settings → API → Create New Token. Se baja kaggle.json. Impórtalo o pega su contenido. Una sola vez.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Campo(vm.jsonKaggle, { vm.jsonKaggle = it }, "Pega kaggle.json", minLineas = 3)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = vm::guardarJsonKaggle, modifier = Modifier.heightIn(min = 48.dp)) { Text("Guardar llave") }
+            TextButton(onClick = onImportar, modifier = Modifier.heightIn(min = 48.dp)) { Text("Importar archivo") }
+        }
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("Sesión rápida", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            Switch(checked = vm.sesionQuiere, onCheckedChange = vm::fijarSesion)
+        }
+        Text(
+            when (vm.sesionFase) {
+                "arrancando" -> "Arrancando · ${vm.sesionMinutos} min de GPU"
+                "listo" -> "Listo · ${vm.sesionMinutos} min de GPU"
+                else -> "Apagado. Sin sesión, cada Generar manda un kernel y espera el resultado."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text("Apagar tras ${vm.minutosOcio.toInt()} min sin pedidos", style = MaterialTheme.typography.titleSmall)
+        Slider(
+            value = vm.minutosOcio,
+            onValueChange = vm::fijarOcio,
+            valueRange = 5f..60f,
+            steps = 10,
+            colors = coloresSlider(),
+        )
+        if (vm.sesionQuiere) {
+            TextButton(onClick = { vm.fijarSesion(false) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Apagar sesión")
+            }
         }
         Text("Estilo del retrato", style = MaterialTheme.typography.titleSmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -74,6 +116,10 @@ fun PantallaAjustes(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("Usar el notebook que abrí yo", modifier = Modifier.weight(1f))
+                Switch(checked = vm.notebookPropio, onCheckedChange = vm::fijarNotebookPropio)
+            }
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text("Usar conexión manual", modifier = Modifier.weight(1f))
                 Switch(checked = vm.manual, onCheckedChange = vm::fijarManual)
@@ -120,6 +166,9 @@ fun PantallaAjustes(
 }
 
 private fun estadoConexion(vm: AjustesViewModel): String = when {
+    vm.sesionFase == "arrancando" -> "Sesión arrancando"
+    vm.sesionFase == "listo" -> "Sesión lista"
+    !vm.notebookPropio -> "Kaggle automático"
     vm.manual && vm.guardada.url.isBlank() -> "Conexión manual, sin datos"
     vm.enLinea == true && vm.servidor == "kaggle" -> "Conectado a Kaggle"
     vm.enLinea == true -> "Conectado a Colab"

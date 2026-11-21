@@ -145,7 +145,9 @@ Cada sesión fría baja varios gigas y puede tardar muchos minutos. Con `USAR_GO
 
 El workflow `.github/workflows/colab-studio-apk.yml` corre en cada push y en cada pull request que toque `colab-studio/`, y también a mano. Compila el APK y lo deja como artefacto del run.
 
-**Publica un Release solo cuando etiquetas `v*`** (por ejemplo `v0.1.2`). La app compara `versionName` con esa etiqueta.
+**Publica un Release solo cuando etiquetas `v*`** (por ejemplo `v0.1.3`). La app compara `versionName` con esa etiqueta.
+
+Por defecto la app no pide que abras un notebook. En Ajustes pegas el `kaggle.json` (kaggle.com → tu foto → Settings → API → Create New Token) y Generar manda un kernel privado. **Sesión rápida** deja el servidor encendido para pintar más seguido y se apaga solo a los 15 minutos sin pedidos. El notebook que abres tú queda en Avanzado.
 
 Cada imagen sale dos veces si `rembg` puede quitar el fondo: un PNG transparente y otro con fondo negro. Va activado por defecto. En Generar imagen solo se ven el prompt, los pasos, la guía, la cantidad y la semilla. El estilo anime o realista se elige en Ajustes. El servidor antepone etiquetas de calidad y el negativo de menores, y usa Euler a con Illustrious.
 

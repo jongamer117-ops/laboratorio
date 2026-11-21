@@ -5,6 +5,13 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val copiarKernels = tasks.register<Copy>("copiarKernels") {
+    from(rootProject.file("../server/kaggle"))
+    from(rootProject.file("../server/bastion_server.py"))
+    into(layout.projectDirectory.dir("src/main/assets/kaggle"))
+}
+tasks.named("preBuild").configure { dependsOn(copiarKernels) }
+
 android {
     namespace = "dev.jongamer.bastionalbor"
     compileSdk = 36
@@ -13,8 +20,8 @@ android {
         applicationId = "dev.jongamer.bastionalbor"
         minSdk = 33
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.2"
+        versionCode = 6
+        versionName = "0.1.3"
     }
 
     fun secreto(nombre: String, defecto: String = ""): String {
@@ -106,6 +113,7 @@ dependencies {
     ksp("androidx.room:room-compiler:2.8.4")
 
     implementation("androidx.datastore:datastore-preferences:1.1.7")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
 

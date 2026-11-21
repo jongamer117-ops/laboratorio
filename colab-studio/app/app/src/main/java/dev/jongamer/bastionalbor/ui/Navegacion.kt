@@ -118,6 +118,9 @@ fun AppBastion(repo: Repositorio) {
                     )
                     Text(
                         when {
+                            ajustes.sesionFase == "arrancando" -> "Sesión arrancando"
+                            ajustes.sesionFase == "listo" -> "Sesión lista · ${ajustes.sesionMinutos} min"
+                            !ajustes.notebookPropio -> "Kaggle automático"
                             ajustes.guardada.url.isBlank() -> if (ajustes.servidor == "kaggle") "Kaggle" else "Colab"
                             ajustes.enLinea == true -> if (ajustes.servidor == "kaggle") "Kaggle · en línea" else "Colab · en línea"
                             ajustes.enLinea == false -> if (ajustes.servidor == "kaggle") "Kaggle · apagado" else "Colab · apagado"
@@ -174,7 +177,7 @@ fun AppBastion(repo: Repositorio) {
                         val vm: ImagenViewModel = viewModel(factory = ImagenViewModel.fabrica(repo))
                         PantallaImagen(
                             vm,
-                            ajustes.guardada.url.isNotBlank() && ajustes.enLinea == true,
+                            !ajustes.notebookPropio || (ajustes.guardada.url.isNotBlank() && ajustes.enLinea == true),
                             reducir,
                             snack,
                             ajustes.modeloImagen,
@@ -182,14 +185,25 @@ fun AppBastion(repo: Repositorio) {
                     }
                     composable("historias") {
                         val vm: HistoriasViewModel = viewModel(factory = HistoriasViewModel.fabrica(repo))
-                        PantallaHistorias(vm, ajustes.guardada.url.isNotBlank(), reducir, snack, ajustes.modelosTexto) { ir("ajustes") }
+                        PantallaHistorias(
+                            vm,
+                            !ajustes.notebookPropio || ajustes.guardada.url.isNotBlank(),
+                            reducir,
+                            snack,
+                            ajustes.modelosTexto,
+                        ) { ir("ajustes") }
                     }
                     composable("galeria") {
                         val vm: GaleriaViewModel = viewModel(factory = GaleriaViewModel.fabrica(repo))
                         PantallaGaleria(vm, snack, { ir("imagen") }, { ir("historias") })
                     }
                     composable("ajustes") {
-                        PantallaAjustes(ajustes, reducir) { nav.navigate("qr") }
+                        val importar = androidx.activity.compose.rememberLauncherForActivityResult(
+                            androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+                        ) { uri -> if (uri != null) ajustes.importarKaggle(uri) }
+                        PantallaAjustes(ajustes, reducir, { nav.navigate("qr") }) {
+                            importar.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        }
                     }
                     composable("qr") {
                         PantallaQr(
