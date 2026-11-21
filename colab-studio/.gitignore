@@ -1,0 +1,14 @@
+.gradle/
+build/
+local.properties
+app/app/src/main/assets/kaggle/
+*.jks
+*.keystore
+!app/keystore/bastion-release.jks
+captures/
+.idea/
+*.iml
+.cxx/
+__pycache__/
+*.pyc
+.DS_Store

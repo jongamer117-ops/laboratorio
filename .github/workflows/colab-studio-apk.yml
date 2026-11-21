@@ -1,0 +1,127 @@
+name: Colab Studio APK
+
+on:
+  push:
+    paths:
+      - "colab-studio/**"
+      - ".github/workflows/colab-studio-apk.yml"
+      - "README.md"
+  pull_request:
+    paths:
+      - "colab-studio/**"
+      - ".github/workflows/colab-studio-apk.yml"
+      - "README.md"
+  workflow_dispatch:
+
+jobs:
+  servidor:
+    name: Notebook y filtros
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Probar el servidor sin GPU
+        working-directory: colab-studio/server
+        run: |
+          pip install flask cryptography
+          python -m unittest test_bastion_server.py
+          python check_notebook.py
+
+  apk:
+    name: APK
+    runs-on: ubuntu-latest
+    needs: servidor
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Plataforma Android 36
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [ -z "$sdk" ]; then
+            echo "El runner no trae Android SDK"
+            exit 1
+          fi
+          if [ -x "$sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
+            sm="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          else
+            sm="$(find "$sdk" -type f -name sdkmanager | head -n 1)"
+          fi
+          yes | "$sm" --sdk_root="$sdk" --licenses >/dev/null || true
+          "$sm" --sdk_root="$sdk" "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Firma
+        id: firma
+        env:
+          KS: ${{ secrets.BASTION_KEYSTORE_BASE64 }}
+          KSPASS: ${{ secrets.BASTION_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.BASTION_KEY_ALIAS }}
+          KPASS: ${{ secrets.BASTION_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "$KS" ] && [ -n "$KSPASS" ] && [ -n "$ALIAS" ] && [ -n "$KPASS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/bastion.jks"
+            echo "BASTION_KEYSTORE_PATH=$RUNNER_TEMP/bastion.jks" >> "$GITHUB_ENV"
+            echo "BASTION_KEYSTORE_PASSWORD=$KSPASS" >> "$GITHUB_ENV"
+            echo "BASTION_KEY_ALIAS=$ALIAS" >> "$GITHUB_ENV"
+            echo "BASTION_KEY_PASSWORD=$KPASS" >> "$GITHUB_ENV"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "APK firmado con el keystore de los secretos."
+          elif [ -f "$GITHUB_WORKSPACE/colab-studio/app/keystore/bastion-release.jks" ]; then
+            echo "BASTION_KEYSTORE_PATH=$GITHUB_WORKSPACE/colab-studio/app/keystore/bastion-release.jks" >> "$GITHUB_ENV"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "Sin secretos. El APK se firma con el keystore fijo del repo."
+          else
+            keytool -genkeypair -v \
+              -keystore "$RUNNER_TEMP/debug.keystore" \
+              -storepass android -keypass android \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Bastion Debug, OU=Bastion, O=Bastion, L=CDMX, ST=CDMX, C=MX"
+            echo "BASTION_KEYSTORE_PATH=$RUNNER_TEMP/debug.keystore" >> "$GITHUB_ENV"
+            echo "BASTION_KEYSTORE_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "BASTION_KEY_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
+            echo "BASTION_KEY_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "mode=debug" >> "$GITHUB_OUTPUT"
+            echo "Faltan secretos y el keystore del repo. El APK se firma con una llave de depuración nueva."
+          fi
+
+      - name: Compilar
+        working-directory: colab-studio/app
+        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --stacktrace
+
+      - name: Nombrar el APK
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          origen="colab-studio/app/app/build/outputs/apk/release/app-release.apk"
+          version="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' colab-studio/app/app/build.gradle.kts | head -n 1)"
+          if [ "${{ steps.firma.outputs.mode }}" = "release" ]; then
+            cp "$origen" "dist/BastionAlbor-v${version}.apk"
+          else
+            cp "$origen" dist/BastionAlbor-debug-firmado.apk
+          fi
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bastion-albor-apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Publicar en GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
